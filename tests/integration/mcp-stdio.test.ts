@@ -104,6 +104,7 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_spawn",
           "agent_status",
           "agent_history",
+          "agent_diff",
           "agent_abort",
           "agent_list",
         ]),
@@ -142,6 +143,11 @@ describe("MCP stdio server with mock adapter", () => {
       expect(eventTypes).toContain("tool.called");
       expect(eventTypes).toContain("task.completed");
       expect(history.json.total_events).toBeGreaterThan(0);
+
+      const diff = await callTool(mcp.client, "agent_diff", { task_id: taskId });
+      expect(diff.isError).toBe(false);
+      expect(diff.json.available).toBe(false);
+      expect(diff.json.reason).toBe("no_worktree");
 
       const listed = await callTool(mcp.client, "agent_list", { limit: 10 });
       expect((listed.json.tasks as unknown[]).length).toBe(1);
