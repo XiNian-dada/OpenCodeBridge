@@ -11,9 +11,6 @@ importers:
       '@modelcontextprotocol/server':
         specifier: 2.3.1
         version: 2.3.1
-      '@opencode-ai/sdk':
-        specifier: 1.19.4
-        version: 1.19.4
       pino:
         specifier: 10.4.0
         version: 10.4.0
@@ -216,9 +213,6 @@ packages:
   '@modelcontextprotocol/server@2.3.1':
     resolution: {integrity: sha512-e59MfWuSssj6DoQ96JCTqdW1AXT5/XtnTl0WWd6MU1Ka434fFUGGosCLJbGNySDhHGvxQWoRWK137FXYFkYNWw==}
     engines: {node: '>=20'}
-
-  '@opencode-ai/sdk@1.19.4':
-    resolution: {integrity: sha512-3Wuc4t8gEuWKHbX1Na9oDK6PgOveid70l4Ks5RCjRIo2RcP8FQN3NS6Mg3XWc2+WiUfpfrmvBWlh5u1zeQfDQw==}
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
@@ -796,10 +790,6 @@ snapshots:
     dependencies:
       '@modelcontextprotocol/core': 2.3.1
       zod: 4.6.7
-
-  '@opencode-ai/sdk@1.19.4':
-    dependencies:
-      cross-spawn: 7.0.6
 
   '@oxc-project/types@0.155.0': {}
 

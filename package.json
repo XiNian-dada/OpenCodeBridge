@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
-    "@opencode-ai/sdk": "1.19.4",
     "pino": "10.4.0",
     "zod": "4.6.7"
   },
