@@ -51,3 +51,24 @@ Status: accepted for Phase 1
   confinement or refuse writable tasks with `SANDBOX_UNAVAILABLE`.
 - Credentials available to a local OpenCode process are a residual risk. A
   dedicated low-privilege provider key and filesystem confinement are planned.
+
+## Phase 2 update
+
+- The `@opencode-ai/sdk@1.19.4` `./v2` client did not match the installed
+  OpenCode 2.1.2 HTTP contract. Its session/prompt shapes used the older
+  `noReply`/`parts` model instead of the current `resume`/`text` API. The SDK
+  dependency was removed rather than forced into an unverified adapter.
+- The bridge now uses a narrow, typed HTTP client against `/api`, verified
+  against a live OpenCode 2.1.2 server:
+  - `GET /api/info`, `/api/model`, `/api/session/{id}`,
+    `/api/session/{id}/message`, `/api/session/active`
+  - `POST /api/session`, `/api/session/{id}/prompt`,
+    `/api/session/{id}/interrupt`
+  - `GET /api/event` (SSE)
+- Each task gets a private `opencode serve` process with a random Basic-auth
+  password, isolated `OPENCODE_DB`, a version gate, and a process-group stop.
+- The adapter is intentionally read-only until Phase 3. Writable tasks return
+  `SANDBOX_UNAVAILABLE`; OpenCode permissions cannot replace an OS sandbox.
+- The live smoke test uses `resume: false`, so it exercises server startup,
+  model discovery, session creation, prompt admission, and SSE without invoking
+  a model provider.
