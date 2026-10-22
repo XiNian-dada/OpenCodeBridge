@@ -7,6 +7,7 @@ import {
   AgentDiffInput,
   AgentHistoryInput,
   AgentListInput,
+  AgentMessageInput,
   AgentSpawnInput,
   AgentStatusInput,
 } from "./schemas.js";
@@ -172,6 +173,34 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
           deletions: diff.deletions,
           patch: diff.patch,
           patch_truncated: diff.patch_truncated,
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "agent_message",
+    {
+      title: "Continue a task session",
+      description:
+        "Send a follow-up message to the same OpenCode session and workspace. Creates a new turn task linked to the original task.",
+      inputSchema: AgentMessageInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
+    },
+    async (input) => {
+      try {
+        const result = await manager.message(input.task_id, input.message);
+        return success({
+          ok: true,
+          task: taskPayload(result.task),
+          parent_task_id: result.task.parent_task_id,
+          session_id: result.task.session_id,
         });
       } catch (error) {
         return failure(error);

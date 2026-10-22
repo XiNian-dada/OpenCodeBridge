@@ -15,6 +15,7 @@ function instructions(config: BridgeConfig): string {
     "Codex is the primary agent; this bridge delegates only bounded tasks to OpenCode.",
     "Use agent_spawn for clear, limited work and poll agent_status until a terminal state.",
     "Use agent_history to inspect what was delegated and what the agent actually did; do not assume success from a summary.",
+    "Use agent_message to continue a completed task in the same OpenCode session and workspace; it returns a new turn task ID linked to the original.",
     "Use agent_diff to review worktree changes before accepting or merging them; writable OpenCode tasks run in isolated Git worktrees.",
     "Use agent_abort when work must stop; the bridge verifies the adapter stopped before reporting cancellation.",
     "The bridge never auto-upgrades to a more expensive model. Ask the user to update the local configuration if a model is not allowlisted.",

@@ -62,6 +62,17 @@ export const AgentHistoryInput = z
 
 export const AgentAbortInput = z.object({ task_id: taskId }).strict();
 
+export const AgentMessageInput = z
+  .object({
+    task_id: taskId,
+    message: z
+      .string()
+      .min(1)
+      .max(100_000)
+      .describe("Follow-up instruction for the same OpenCode session and workspace"),
+  })
+  .strict();
+
 export const AgentDiffInput = z
   .object({
     task_id: taskId,
