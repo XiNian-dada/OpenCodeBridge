@@ -63,7 +63,6 @@ async function makeOpenCodeHarness(scenario: FakeScenario) {
     sandboxed: false,
     async stop() {
       stops++;
-      await fake.close();
     },
   };
 
@@ -146,6 +145,34 @@ describe("OpenCodeAdapter", () => {
       expect(finished?.status).toBe("completed");
       expect(finished?.worktree_path).not.toBeNull();
       expect(finished?.worktree_path).not.toBe(repo);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+
+  it("resumes the same OpenCode session for a follow-up message", async () => {
+    const harness = await makeOpenCodeHarness("success");
+    try {
+      const first = await harness.services.manager.spawn(input(harness.tempDir));
+      const completed = await harness.services.manager.waitForTerminal(first.task.task_id, 5000);
+      expect(completed?.session_id).not.toBeNull();
+
+      const followUp = await harness.services.manager.message(
+        first.task.task_id,
+        "Please continue with one more check.",
+      );
+      expect(followUp.task.parent_task_id).toBe(first.task.task_id);
+      expect(followUp.task.session_id).toBe(completed?.session_id);
+
+      const child = await harness.services.manager.waitForTerminal(followUp.task.task_id, 5000);
+      expect(child?.status).toBe("completed");
+      expect(child?.session_id).toBe(completed?.session_id);
+
+      const history = harness.services.manager.history(followUp.task.task_id, { limit: 100 });
+      const types = history.events.map((event) => event.event_type);
+      expect(types).toContain("task.resumed");
+      expect(types).toContain("opencode.session.resumed");
     } finally {
       await harness.cleanup();
     }

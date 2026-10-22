@@ -15,6 +15,10 @@ const execFileAsync = promisify(execFile);
 function task(repoRoot: string, baseCommit: string): TaskRecord {
   return {
     id: "task_diff_test",
+    parent_task_id: null,
+    root_task_id: "task_diff_test",
+    turn: 1,
+    opencode_task_id: "task_diff_test",
     idempotency_key: null,
     idempotency_fingerprint: null,
     task: "test",

@@ -104,6 +104,7 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_spawn",
           "agent_status",
           "agent_history",
+          "agent_message",
           "agent_diff",
           "agent_abort",
           "agent_list",
@@ -144,13 +145,23 @@ describe("MCP stdio server with mock adapter", () => {
       expect(eventTypes).toContain("task.completed");
       expect(history.json.total_events).toBeGreaterThan(0);
 
+      const followUp = await callTool(mcp.client, "agent_message", {
+        task_id: taskId,
+        message: "Add one more assertion.",
+      });
+      expect(followUp.isError).toBe(false);
+      const childTask = followUp.json.task as Record<string, unknown>;
+      expect(childTask.parent_task_id).toBe(taskId);
+      expect(childTask.session_id).toBe(completed.session_id);
+      await waitForTaskStatus(mcp.client, String(childTask.task_id), ["completed"]);
+
       const diff = await callTool(mcp.client, "agent_diff", { task_id: taskId });
       expect(diff.isError).toBe(false);
       expect(diff.json.available).toBe(false);
       expect(diff.json.reason).toBe("no_worktree");
 
       const listed = await callTool(mcp.client, "agent_list", { limit: 10 });
-      expect((listed.json.tasks as unknown[]).length).toBe(1);
+      expect((listed.json.tasks as unknown[]).length).toBe(2);
 
       const rejected = await callTool(mcp.client, "agent_spawn", {
         ...spawnInput(harness.repoRoot),

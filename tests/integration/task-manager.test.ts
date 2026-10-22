@@ -116,6 +116,47 @@ describe("TaskManager with mock adapter", () => {
     }
   });
 
+
+  it("continues a completed task in the same session as a new turn", async () => {
+    const harness = await createHarness();
+    try {
+      const first = await harness.services.manager.spawn(spawnInput(harness.repoRoot));
+      const completed = await harness.services.manager.waitForTerminal(first.task.task_id, 5000);
+      expect(completed?.session_id).not.toBeNull();
+
+      const followUp = await harness.services.manager.message(
+        first.task.task_id,
+        "Please add one more edge-case assertion.",
+      );
+      expect(followUp.task.parent_task_id).toBe(first.task.task_id);
+      expect(followUp.task.root_task_id).toBe(first.task.task_id);
+      expect(followUp.task.turn).toBe(2);
+      expect(followUp.task.session_id).toBe(completed?.session_id);
+
+      const child = await harness.services.manager.waitForTerminal(followUp.task.task_id, 5000);
+      expect(child?.status).toBe("completed");
+      expect(child?.session_id).toBe(completed?.session_id);
+
+      const history = harness.services.manager.history(followUp.task.task_id, { limit: 100 });
+      expect(history.events.map((event) => event.event_type)).toContain("task.resumed");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("rejects messages while a task or its lineage is running", async () => {
+    const harness = await createHarness({ scenario: "slow" });
+    try {
+      const spawned = await harness.services.manager.spawn(spawnInput(harness.repoRoot));
+      await waitForStatus(harness, spawned.task.task_id, ["running"]);
+      await expect(
+        harness.services.manager.message(spawned.task.task_id, "follow up"),
+      ).rejects.toMatchObject({ code: "TASK_BUSY" });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("times out a task and stops the adapter", async () => {
     const harness = await createHarness({ scenario: "slow", maxTimeoutSeconds: 30 });
     try {

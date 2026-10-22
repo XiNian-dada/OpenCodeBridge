@@ -227,6 +227,7 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
       for (const client of sseClients) client.end();
       sseClients.clear();
       if (server.listening) {
+        server.closeAllConnections();
         server.close();
         await once(server, "close");
       }
