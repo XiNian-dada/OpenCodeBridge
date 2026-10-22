@@ -54,7 +54,7 @@ function shutdown(
 function main(): void {
   const config = loadConfig();
   const logger = createLogger(config.log_level);
-  const adapter = createAdapter(config);
+  const adapter = createAdapter(config, logger);
   const services = createServices(config, adapter, logger);
 
   const handle = serveStdio(() => createMcpServer(services), {

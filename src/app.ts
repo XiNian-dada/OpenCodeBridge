@@ -1,6 +1,7 @@
 import type { BridgeConfig } from "./config.js";
 import type { AgentAdapter } from "./adapters/adapter.js";
 import { MockAdapter } from "./adapters/mock/mock-adapter.js";
+import { OpenCodeAdapter } from "./opencode/adapter.js";
 import { EventStore } from "./core/event-store.js";
 import { Redactor } from "./core/redact.js";
 import { TaskManager } from "./core/task-manager.js";
@@ -16,7 +17,7 @@ export interface BridgeServices {
   logger: Logger;
 }
 
-export function createAdapter(config: BridgeConfig): AgentAdapter {
+export function createAdapter(config: BridgeConfig, logger: Logger): AgentAdapter {
   if (config.adapter === "mock") {
     return new MockAdapter({
       scenario: config.mock.scenario,
@@ -24,11 +25,11 @@ export function createAdapter(config: BridgeConfig): AgentAdapter {
     });
   }
 
-  throw new BridgeError(
-    "NOT_IMPLEMENTED",
-    "The real OpenCode adapter is scheduled for Phase 2. Set adapter to \"mock\" for Phase 1.",
-    { details: { adapter: config.adapter } },
-  );
+  if (config.adapter === "opencode") {
+    return new OpenCodeAdapter({ config, logger });
+  }
+
+  throw new BridgeError("INVALID_CONFIG", `Unknown adapter: ${String(config.adapter)}`);
 }
 
 export function createServices(
