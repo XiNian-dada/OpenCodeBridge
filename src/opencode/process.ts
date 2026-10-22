@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { BridgeError, isBridgeError } from "../errors.js";
+import { SANDBOX_EXEC, sandboxAvailable, writeSeatbeltProfile } from "../security/sandbox.js";
 import type { Logger } from "../logging.js";
 import { OpenCodeHttpClient, OpenCodeHttpError } from "./http-client.js";
 import type { OpenCodeInfo } from "./types.js";
@@ -20,6 +21,7 @@ export interface ManagedOpenCodeServerOptions {
   logger: Logger;
   extraEnv?: Record<string, string>;
   signal?: AbortSignal;
+  sandbox?: { worktreePath: string };
 }
 
 export interface ManagedOpenCodeServer {
@@ -28,6 +30,7 @@ export interface ManagedOpenCodeServer {
   pid: number;
   port: number;
   logPath: string;
+  sandboxed: boolean;
   stop(): Promise<void>;
 }
 
@@ -51,8 +54,21 @@ export async function startManagedOpenCodeServer(
   const baseUrl = `http://127.0.0.1:${port}`;
   const taskDir = join(options.dataDir, "tasks", options.taskId);
   const logDir = join(options.dataDir, "logs");
+  const tempDir = join(taskDir, "tmp");
   await mkdir(taskDir, { recursive: true, mode: 0o700 });
   await mkdir(logDir, { recursive: true, mode: 0o700 });
+
+  let profilePath: string | null = null;
+  if (options.sandbox !== undefined) {
+    if (!sandboxAvailable()) {
+      throw new BridgeError("SANDBOX_UNAVAILABLE", "Writable OpenCode tasks require macOS sandbox-exec");
+    }
+    profilePath = await writeSeatbeltProfile({
+      taskDir,
+      tempDir,
+      worktreePath: options.sandbox.worktreePath,
+    });
+  }
 
   const logPath = join(logDir, `opencode-${options.taskId}.log`);
   const logStream = createWriteStream(logPath, { flags: "a", mode: 0o600 });
@@ -66,14 +82,19 @@ export async function startManagedOpenCodeServer(
     OPENCODE_CONFIG_CONTENT: JSON.stringify(options.configContent),
     OPENCODE_CONFIG_PROJECT_DISABLE: "1",
     OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    ...(profilePath === null ? {} : { TMPDIR: tempDir, TMP: tempDir, TEMP: tempDir }),
   };
   delete env.OPENCODE_PASSWORD;
 
   let child: ChildProcess;
   try {
+    const command = profilePath === null ? options.binary : SANDBOX_EXEC;
+    const args = profilePath === null
+      ? ["serve", "--hostname", "127.0.0.1", "--port", String(port)]
+      : ["-f", profilePath, options.binary, "serve", "--hostname", "127.0.0.1", "--port", String(port)];
     child = spawn(
-      options.binary,
-      ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
+      command,
+      args,
       {
         cwd: options.cwd,
         detached: process.platform !== "win32",
@@ -151,6 +172,7 @@ export async function startManagedOpenCodeServer(
       pid: child.pid ?? info.pid,
       port,
       logPath,
+      sandboxed: profilePath !== null,
       stop,
     };
   } catch (error) {

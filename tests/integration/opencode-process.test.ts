@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../../src/logging.js";
 import { startManagedOpenCodeServer } from "../../src/opencode/process.js";
+import { sandboxAvailable } from "../../src/security/sandbox.js";
 
 const fakeBinary = `#!/usr/bin/env node
 import { createServer } from "node:http";
@@ -58,6 +59,30 @@ describe("managed OpenCode process", () => {
       const pid = managed.pid;
       await managed.stop();
       expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      if (managed !== undefined) await managed.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+
+  it.skipIf(!sandboxAvailable())("starts under the macOS write-confinement sandbox", async () => {
+    const { dir, binary } = await makeFakeBinary();
+    let managed;
+    try {
+      managed = await startManagedOpenCodeServer({
+        binary,
+        cwd: dir,
+        dataDir: join(dir, "data"),
+        taskId: "task_sandbox_test",
+        configContent: {},
+        compatibility: "2.1.x",
+        startupTimeoutMs: 5000,
+        logger: createLogger("silent"),
+        sandbox: { worktreePath: dir },
+      });
+      expect(managed.sandboxed).toBe(true);
+      expect((await managed.client.info()).version).toBe("2.1.2");
     } finally {
       if (managed !== undefined) await managed.stop();
       await rm(dir, { recursive: true, force: true });
