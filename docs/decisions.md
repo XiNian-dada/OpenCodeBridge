@@ -81,3 +81,23 @@ Status: accepted for Phase 1
 - `GET /api/config` returns raw provider settings, including API keys. The bridge
   must never call or expose this endpoint. The HTTP client intentionally has no
   method for it.
+
+## Phase 3 update
+
+- Writable OpenCode tasks now require a Git worktree created by the bridge.
+  Worktrees use `git worktree add --detach` at the recorded HEAD commit, under
+  the bridge data directory, and are never created from uncommitted main-tree
+  changes. Dirty main-tree files are reported as an event.
+- Diff inspection covers tracked modifications, staged additions, deletions,
+  untracked files, line counts, and a size-limited patch.
+- On macOS, writable servers run under `sandbox-exec` with a generated Seatbelt
+  profile. Writes are confined to the worktree, task data directory, task temp
+  directory, and OpenCode's own log/shell/snapshot/state/cache directories.
+- Writable OpenCode permissions are edit-only: edit/write/patch are allowed,
+  while shell, external directories, web tools, subagents, and questions remain
+  denied. Test execution stays with Codex in Phase 3.
+- On non-macOS platforms, or if `sandbox-exec` is unavailable, writable tasks
+  fail with `SANDBOX_UNAVAILABLE`. No permission-only fallback is presented as
+  an OS sandbox.
+- Worktrees are retained after completion, failure, or abort. Automatic cleanup
+  and independent user approval remain Phase 5 work.
