@@ -18,7 +18,7 @@ describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
         cwd: dir,
         dataDir: join(dir, "data"),
         taskId: "task_live_smoke",
-        configContent: { permissions: [...READ_ONLY_PERMISSIONS] },
+        configContent: { permissions: [...READ_ONLY_PERMISSIONS], snapshots: false },
         compatibility: "2.1.x",
         startupTimeoutMs: 15000,
         logger: createLogger("silent"),
