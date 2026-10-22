@@ -83,7 +83,7 @@ export class MockAdapter implements AgentAdapter {
     context: AdapterContext,
   ): Promise<AdapterRunResult> {
     const session: AdapterSession = {
-      id: `mock_sess_${randomUUID()}`,
+      id: _task.session_id ?? `mock_sess_${randomUUID()}`,
       model: _task.model,
       provider_id: _task.provider_id,
       worktree_path: null,

@@ -69,6 +69,10 @@ export interface SpawnTaskInput {
 
 export interface TaskRecord {
   id: string;
+  parent_task_id: string | null;
+  root_task_id: string;
+  turn: number;
+  opencode_task_id: string;
   idempotency_key: string | null;
   idempotency_fingerprint: string | null;
   task: string;
@@ -112,6 +116,9 @@ export interface TaskErrorView {
 
 export interface TaskView {
   task_id: string;
+  parent_task_id: string | null;
+  root_task_id: string;
+  turn: number;
   status: TaskStatus;
   stage: string;
   model: string;
@@ -137,6 +144,10 @@ export interface TaskView {
 
 export interface TaskHistorySummary {
   task_id: string;
+  parent_task_id: string | null;
+  root_task_id: string;
+  turn: number;
+  session_id: string | null;
   task: string;
   repo_root: string;
   task_type: TaskType;

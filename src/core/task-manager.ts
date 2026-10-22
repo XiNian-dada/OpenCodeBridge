@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import type { BridgeConfig } from "../config.js";
 import type { DiffManager, DiffResult } from "../git/diff-manager.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
@@ -133,8 +134,13 @@ export class TaskManager {
     }
 
     const createdAt = this.now().toISOString();
+    const taskId = this.idFactory();
     const task: TaskRecord = {
-      id: this.idFactory(),
+      id: taskId,
+      parent_task_id: null,
+      root_task_id: taskId,
+      turn: 1,
+      opencode_task_id: taskId,
       idempotency_key: idempotencyKey,
       idempotency_fingerprint: idempotencyKey === null ? null : fingerprint,
       task: taskText,
@@ -204,6 +210,109 @@ export class TaskManager {
     );
     this.pump();
     return { task: this.toView(task), deduplicated: false };
+  }
+
+  async message(taskId: string, message: string): Promise<SpawnResult> {
+    const text = message.trim();
+    if (text.length === 0) {
+      throw new BridgeError("INVALID_ARGUMENT", "message must not be empty");
+    }
+    if (text.length > 100_000) {
+      throw new BridgeError("INVALID_ARGUMENT", "message is too large (max 100000 characters)");
+    }
+
+    const parent = this.requireTask(taskId);
+    if (!isTerminal(parent.status)) {
+      throw new BridgeError("TASK_BUSY", "Task is still running; wait or abort it before sending a message", {
+        details: { task_id: parent.id, status: parent.status },
+      });
+    }
+    if (parent.session_id === null) {
+      throw new BridgeError("SESSION_LOST", "Task has no OpenCode session to continue", {
+        details: { task_id: parent.id, status: parent.status },
+      });
+    }
+    if (this.hasActiveLineage(parent.root_task_id)) {
+      throw new BridgeError("TASK_BUSY", "Another turn in this task lineage is still active", {
+        details: { root_task_id: parent.root_task_id },
+      });
+    }
+    if (this.queue.size >= this.options.config.scheduler.max_queue) {
+      throw new BridgeError("QUEUE_FULL", "The task queue is full", {
+        details: { max_queue: this.options.config.scheduler.max_queue },
+      });
+    }
+
+    const resolvedModel = this.options.modelPolicy.resolve(parent.model);
+    const repo = await this.options.pathPolicy.resolveRepoRoot(parent.repo_root, parent.read_only);
+    const createdAt = this.now().toISOString();
+    const childId = this.idFactory();
+    const child: TaskRecord = {
+      id: childId,
+      parent_task_id: parent.id,
+      root_task_id: parent.root_task_id,
+      turn: parent.turn + 1,
+      opencode_task_id: parent.opencode_task_id,
+      idempotency_key: null,
+      idempotency_fingerprint: null,
+      task: text,
+      repo_root: repo.repo_root,
+      task_type: parent.task_type,
+      model: resolvedModel.model,
+      provider_id: resolvedModel.provider_id,
+      model_id: resolvedModel.model_id,
+      model_variant: resolvedModel.variant,
+      read_only: parent.read_only,
+      timeout_seconds: parent.timeout_seconds,
+      status: "queued",
+      stage: "queued",
+      session_id: parent.session_id,
+      worktree_path: parent.worktree_path,
+      worktree_git_dir: parent.worktree_git_dir,
+      base_commit: parent.base_commit,
+      created_at: createdAt,
+      started_at: null,
+      ended_at: null,
+      error_code: null,
+      error_message: null,
+      result_summary: null,
+      usage: emptyUsage(),
+      last_event_sequence: 0,
+      stop_reason: null,
+      cancel_requested_at: null,
+    };
+
+    this.tasks.set(child.id, child);
+    this.append(
+      child,
+      "codex",
+      "task.resumed",
+      {
+        parent_task_id: parent.id,
+        root_task_id: parent.root_task_id,
+        turn: child.turn,
+        session_id: parent.session_id,
+        message: text,
+      },
+      { maxPayloadChars: this.options.config.history.max_delegation_chars },
+    );
+    const queued = this.queue.enqueue(child.id);
+    if (!queued.ok) {
+      this.tasks.delete(child.id);
+      throw new BridgeError("QUEUE_FULL", "The task queue is full", {
+        details: { max_queue: this.options.config.scheduler.max_queue },
+      });
+    }
+    this.append(child, "bridge", "task.queued", {
+      queue_position: this.queue.position(child.id),
+      max_concurrent: this.options.config.scheduler.max_concurrent,
+    });
+    this.options.logger.info(
+      { task_id: child.id, parent_task_id: parent.id, session_id: parent.session_id },
+      "task resumed",
+    );
+    this.pump();
+    return { task: this.toView(child), deduplicated: false };
   }
 
   status(taskId: string): TaskView {
@@ -425,6 +534,17 @@ export class TaskManager {
 
   private async prepareWorkspace(task: TaskRecord): Promise<void> {
     if (task.read_only || !this.options.adapter.requiresIsolatedWorktree) return;
+    if (task.worktree_path !== null) {
+      try {
+        await stat(task.worktree_path);
+      } catch (error) {
+        throw new BridgeError("WORKTREE_CREATE_FAILED", "Task worktree no longer exists", {
+          cause: error,
+          details: { task_id: task.id, worktree_path: task.worktree_path },
+        });
+      }
+      return;
+    }
     if (this.options.worktrees === undefined) {
       throw new BridgeError("WORKTREE_CREATE_FAILED", "Worktree manager is not configured");
     }
@@ -704,6 +824,9 @@ export class TaskManager {
     const last = this.options.eventStore.last(task.id);
     return {
       task_id: task.id,
+      parent_task_id: task.parent_task_id,
+      root_task_id: task.root_task_id,
+      turn: task.turn,
       status: task.status,
       stage: task.stage,
       model: task.model,
@@ -742,6 +865,10 @@ export class TaskManager {
   private toHistorySummary(task: TaskRecord): TaskHistorySummary {
     return {
       task_id: task.id,
+      parent_task_id: task.parent_task_id,
+      root_task_id: task.root_task_id,
+      turn: task.turn,
+      session_id: task.session_id,
       task: task.task,
       repo_root: task.repo_root,
       task_type: task.task_type,
@@ -751,6 +878,13 @@ export class TaskManager {
       status: task.status,
       created_at: task.created_at,
     };
+  }
+
+  private hasActiveLineage(rootTaskId: string): boolean {
+    for (const task of this.tasks.values()) {
+      if (task.root_task_id === rootTaskId && !isTerminal(task.status)) return true;
+    }
+    return false;
   }
 
   private fingerprint(input: SpawnTaskInput): string {
