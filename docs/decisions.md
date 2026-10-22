@@ -106,3 +106,14 @@ Status: accepted for Phase 1
   an OS sandbox.
 - Worktrees are retained after completion, failure, or abort. Automatic cleanup
   and independent user approval remain Phase 5 work.
+
+## Session continuation
+
+- `agent_message` does not mutate a terminal task back to running. It creates a
+  new turn task with a new task ID, linked by `parent_task_id` and
+  `root_task_id`, and reuses the original `session_id`, worktree, and model
+  policy.
+- The OpenCode server is restarted with the same per-task database, so the
+  existing session can be loaded and prompted again.
+- Only one active task is allowed per lineage; follow-up messages return
+  `TASK_BUSY` while another turn is running.

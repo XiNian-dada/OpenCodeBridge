@@ -11,7 +11,7 @@ keeping task state, prompts, events, and cancellation under bridge control.
 ## What works now
 
 - MCP stdio server (`@modelcontextprotocol/server` v2)
-- Six tools: `agent_spawn`, `agent_status`, `agent_history`, `agent_diff`, `agent_abort`, `agent_list`
+- Seven tools: `agent_spawn`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_abort`, `agent_list`
 - FIFO queue with configurable concurrency and queue limits
 - Explicit task state machine with verified cancellation
 - Idempotency keys
@@ -29,6 +29,8 @@ keeping task state, prompts, events, and cancellation under bridge control.
   - usage/cost readback and assistant message capture
 - Isolated Git worktrees for writable tasks, created from the recorded HEAD
 - `agent_diff` for modified, added, deleted, and untracked files
+- Session continuation through `agent_message`, using the same OpenCode session,
+  workspace, model policy, and task lineage
 - Edit-only writable mode under macOS `sandbox-exec` write confinement
 
 ## Requirements
@@ -209,6 +211,15 @@ assistant messages are read back from the session API. If the event stream
 disconnects, the bridge records the disconnection and falls back to polling
 session state.
 
+### `agent_message`
+
+Continues a completed task in its existing OpenCode session and workspace.
+The bridge re-validates the model policy and lineage, then creates a **new turn
+task** linked to the original. The new task has its own task ID, `parent_task_id`,
+`root_task_id`, and `turn`, but reuses the same `session_id` and worktree.
+Messages are serialized: if any task in the lineage is still active, the call
+returns `TASK_BUSY`.
+
 ### `agent_diff`
 
 Returns the task worktree's Git status, modified/added/deleted/untracked files,
@@ -233,7 +244,8 @@ and model filters.
 2. agent_status until the task reaches completed/failed/timed_out/cancelled.
 3. agent_history to see the delegated prompt, tool calls, shell commands, and messages.
 4. agent_diff to review the worktree changes before accepting or merging.
-5. agent_list to inspect all tasks.
+5. agent_message to ask the same OpenCode session for a follow-up turn.
+6. agent_list to inspect all tasks.
 ```
 
 Mock events are explicitly mock-labelled. Real OpenCode events are obtained from
@@ -276,11 +288,11 @@ the Phase 4 daemon exists.
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-The default suite has 72 passing tests. It covers state transitions, queues,
+The default suite has 75 passing tests. It covers state transitions, queues,
 model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
-startup, worktrees, diffs, Seatbelt write confinement, and fake OpenCode adapter
-lifecycles. All default tests are free.
+startup, worktrees, diffs, session continuation, Seatbelt write confinement, and
+fake OpenCode adapter lifecycles. All default tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a
 prompt with `resume: false`):
