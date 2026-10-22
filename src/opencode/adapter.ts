@@ -4,6 +4,7 @@ import type { BridgeConfig } from "../config.js";
 import { BridgeError, isBridgeError } from "../errors.js";
 import type { Logger } from "../logging.js";
 import { resolveDataDir } from "../paths.js";
+import { sandboxAvailable } from "../security/sandbox.js";
 import type { TaskRecord, TaskUsage } from "../types.js";
 import { emptyUsage } from "../types.js";
 import type {
@@ -38,6 +39,16 @@ const READ_ONLY_PERMISSIONS = [
   { action: "read", resource: "*", effect: "allow" },
   { action: "glob", resource: "*", effect: "allow" },
   { action: "grep", resource: "*", effect: "allow" },
+  { action: "read", resource: "*.env", effect: "deny" },
+  { action: "read", resource: "*.env.*", effect: "deny" },
+] as const;
+
+const WRITABLE_PERMISSIONS = [
+  { action: "*", resource: "*", effect: "deny" },
+  { action: "read", resource: "*", effect: "allow" },
+  { action: "glob", resource: "*", effect: "allow" },
+  { action: "grep", resource: "*", effect: "allow" },
+  { action: "edit", resource: "*", effect: "allow" },
   { action: "read", resource: "*.env", effect: "deny" },
   { action: "read", resource: "*.env.*", effect: "deny" },
 ] as const;
@@ -95,7 +106,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode";
-  readonly supportsWrites = false;
+  readonly supportsWrites = sandboxAvailable();
   readonly requiresIsolatedWorktree = true;
   private readonly active = new Map<string, ActiveRun>();
   private readonly serverStarter: (options: ManagedOpenCodeServerOptions) => Promise<ManagedOpenCodeServer>;
@@ -134,7 +145,9 @@ export class OpenCodeAdapter implements AgentAdapter {
       `Task ID: ${task.id}`,
       `Task type: ${task.task_type}`,
       `Workspace: ${task.worktree_path ?? task.repo_root}`,
-      "Mode: READ-ONLY. Do not modify files. Do not run commands that modify files.",
+      task.read_only
+        ? "Mode: READ-ONLY. Do not modify files. Do not run commands that modify files."
+        : "Mode: WRITABLE (edit-only). Modify files only inside this workspace; never run shell commands.",
       "Do not access paths outside the workspace, use network tools, launch subagents, or change configuration.",
       "If the task cannot be completed within these constraints, report the blocker instead of expanding scope.",
       "",
@@ -148,15 +161,23 @@ export class OpenCodeAdapter implements AgentAdapter {
     prompt: string,
     context: AdapterContext,
   ): Promise<AdapterRunResult> {
-    if (!task.read_only) {
+    if (!task.read_only && !this.supportsWrites) {
       throw new BridgeError(
         "SANDBOX_UNAVAILABLE",
-        "The OpenCode adapter is read-only until Phase 3 worktree and sandbox support",
+        "Writable OpenCode tasks require an available OS sandbox",
+        { details: { task_id: task.id, platform: process.platform } },
+      );
+    }
+    if (!task.read_only && task.worktree_path === null) {
+      throw new BridgeError(
+        "WORKTREE_CREATE_FAILED",
+        "Writable OpenCode task has no isolated worktree",
         { details: { task_id: task.id } },
       );
     }
 
     const dataDir = resolveDataDir(this.options.config);
+    const permissions = task.read_only ? READ_ONLY_PERMISSIONS : WRITABLE_PERMISSIONS;
     let server: ManagedOpenCodeServer | null = null;
     let run: ActiveRun | null = null;
 
@@ -166,11 +187,14 @@ export class OpenCodeAdapter implements AgentAdapter {
         cwd: task.worktree_path ?? task.repo_root,
         dataDir,
         taskId: task.id,
-        configContent: { permissions: [...READ_ONLY_PERMISSIONS] },
+        configContent: { permissions: [...permissions] },
         compatibility: this.options.config.opencode.compatibility,
         startupTimeoutMs: this.options.config.opencode.startup_timeout_ms,
         logger: this.options.logger,
         signal: context.signal,
+        ...(task.read_only || task.worktree_path === null
+          ? {}
+          : { sandbox: { worktreePath: task.worktree_path } }),
       });
 
       context.emit({
@@ -181,6 +205,7 @@ export class OpenCodeAdapter implements AgentAdapter {
           port: server.port,
           version: server.info.version,
           log_path: server.logPath,
+          sandboxed: server.sandboxed,
         },
       });
       ensureNotAborted(context.signal);

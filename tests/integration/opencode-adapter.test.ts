@@ -9,6 +9,8 @@ import { OpenCodeHttpClient } from "../../src/opencode/http-client.js";
 import type { ManagedOpenCodeServer } from "../../src/opencode/process.js";
 import { makeTempDir } from "../helpers/fixtures.js";
 import { startFakeOpenCode, type FakeScenario } from "../helpers/fake-opencode.js";
+import { sandboxAvailable } from "../../src/security/sandbox.js";
+import { makeGitRepo } from "../helpers/fixtures.js";
 
 async function makeOpenCodeHarness(scenario: FakeScenario) {
   const tempDir = await realpath(await makeTempDir());
@@ -58,6 +60,7 @@ async function makeOpenCodeHarness(scenario: FakeScenario) {
     pid: 1234,
     port: 1234,
     logPath: join(tempDir, "fake-opencode.log"),
+    sandboxed: false,
     async stop() {
       stops++;
       await fake.close();
@@ -124,13 +127,25 @@ describe("OpenCodeAdapter", () => {
     }
   });
 
-  it("rejects writable tasks before starting a server", async () => {
+  it("creates a worktree for writable tasks when a sandbox is available", async () => {
     const harness = await makeOpenCodeHarness("success");
     try {
-      await expect(
-        harness.services.manager.spawn({ ...input(harness.tempDir), read_only: false }),
-      ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
-      expect(harness.stopCount()).toBe(0);
+      if (!sandboxAvailable()) {
+        await expect(
+          harness.services.manager.spawn({ ...input(harness.tempDir), read_only: false }),
+        ).rejects.toMatchObject({ code: "SANDBOX_UNAVAILABLE" });
+        return;
+      }
+
+      const repo = await makeGitRepo(harness.tempDir, "writable-repo");
+      const spawned = await harness.services.manager.spawn({
+        ...input(repo),
+        read_only: false,
+      });
+      const finished = await harness.services.manager.waitForTerminal(spawned.task.task_id, 5000);
+      expect(finished?.status).toBe("completed");
+      expect(finished?.worktree_path).not.toBeNull();
+      expect(finished?.worktree_path).not.toBe(repo);
     } finally {
       await harness.cleanup();
     }
