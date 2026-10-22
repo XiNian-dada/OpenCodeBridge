@@ -1,0 +1,267 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { BridgeError, isBridgeError } from "../errors.js";
+import type { Logger } from "../logging.js";
+import { OpenCodeHttpClient, OpenCodeHttpError } from "./http-client.js";
+import type { OpenCodeInfo } from "./types.js";
+
+export interface ManagedOpenCodeServerOptions {
+  binary: string;
+  cwd: string;
+  dataDir: string;
+  taskId: string;
+  configContent: Record<string, unknown>;
+  compatibility: string;
+  startupTimeoutMs: number;
+  logger: Logger;
+  extraEnv?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface ManagedOpenCodeServer {
+  client: OpenCodeHttpClient;
+  info: OpenCodeInfo;
+  pid: number;
+  port: number;
+  logPath: string;
+  stop(): Promise<void>;
+}
+
+export function versionMatches(version: string, pattern: string): boolean {
+  const actual = version.split(".").map((part) => Number.parseInt(part, 10));
+  const expected = pattern.split(".");
+
+  for (let index = 0; index < expected.length; index++) {
+    const part = expected[index];
+    if (part === undefined || part === "x" || part === "*") return true;
+    if (actual[index] !== Number.parseInt(part, 10)) return false;
+  }
+  return true;
+}
+
+export async function startManagedOpenCodeServer(
+  options: ManagedOpenCodeServerOptions,
+): Promise<ManagedOpenCodeServer> {
+  const port = await findFreePort();
+  const password = randomBytes(32).toString("base64url");
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const taskDir = join(options.dataDir, "tasks", options.taskId);
+  const logDir = join(options.dataDir, "logs");
+  await mkdir(taskDir, { recursive: true, mode: 0o700 });
+  await mkdir(logDir, { recursive: true, mode: 0o700 });
+
+  const logPath = join(logDir, `opencode-${options.taskId}.log`);
+  const logStream = createWriteStream(logPath, { flags: "a", mode: 0o600 });
+  let stderrTail = "";
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...options.extraEnv,
+    OPENCODE_SERVER_PASSWORD: password,
+    OPENCODE_DB: join(taskDir, "opencode.db"),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(options.configContent),
+    OPENCODE_CONFIG_PROJECT_DISABLE: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE: "1",
+  };
+  delete env.OPENCODE_PASSWORD;
+
+  let child: ChildProcess;
+  try {
+    child = spawn(
+      options.binary,
+      ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
+      {
+        cwd: options.cwd,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        env,
+      },
+    );
+  } catch (error) {
+    logStream.end();
+    throw new BridgeError("OPENCODE_SPAWN_FAILED", "Failed to spawn OpenCode server", {
+      cause: error,
+      details: { binary: options.binary },
+    });
+  }
+
+  child.stdout?.pipe(logStream, { end: false });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderrTail = `${stderrTail}${String(chunk)}`.slice(-4000);
+  });
+  child.stderr?.pipe(logStream, { end: false });
+
+  const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  let exited = false;
+  void exitPromise.then(() => {
+    exited = true;
+  });
+
+  const client = new OpenCodeHttpClient({
+    baseUrl,
+    password,
+    requestTimeoutMs: Math.min(5000, options.startupTimeoutMs),
+  });
+
+  const stopped = { value: false };
+  const onAbort = () => {
+    void stop();
+  };
+  let stop: () => Promise<void>;
+  stop = async () => {
+    if (stopped.value) return;
+    stopped.value = true;
+    options.signal?.removeEventListener("abort", onAbort);
+    await terminateProcess(child, exitPromise);
+    logStream.end();
+  };
+
+  try {
+    if (options.signal !== undefined) {
+      if (options.signal.aborted) {
+        await stop();
+        throw new BridgeError("TASK_ABORTED", "OpenCode server startup was aborted");
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    const info = await waitForInfo(client, options.startupTimeoutMs, () => exited, () => stderrTail);
+    if (!versionMatches(info.version, options.compatibility)) {
+      throw new BridgeError(
+        "OPENCODE_INCOMPATIBLE",
+        `OpenCode ${info.version} does not match required compatibility ${options.compatibility}`,
+        { details: { version: info.version, compatibility: options.compatibility } },
+      );
+    }
+
+    options.logger.debug(
+      { task_id: options.taskId, pid: info.pid, port, log_path: logPath, version: info.version },
+      "OpenCode server started",
+    );
+
+    return {
+      client,
+      info,
+      pid: child.pid ?? info.pid,
+      port,
+      logPath,
+      stop,
+    };
+  } catch (error) {
+    await stop();
+    if (isBridgeError(error)) throw error;
+
+    const tail = await readLogTail(logPath);
+    throw new BridgeError("OPENCODE_SPAWN_FAILED", "OpenCode server failed to start", {
+      cause: error,
+      retryable: true,
+      details: {
+        binary: options.binary,
+        log_path: logPath,
+        stderr: tail || stderrTail,
+      },
+    });
+  }
+}
+
+async function waitForInfo(
+  client: OpenCodeHttpClient,
+  timeoutMs: number,
+  hasExited: () => boolean,
+  stderr: () => string,
+): Promise<OpenCodeInfo> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    if (hasExited()) {
+      throw new BridgeError("OPENCODE_SPAWN_FAILED", "OpenCode server exited during startup", {
+        details: { stderr: stderr() },
+      });
+    }
+    try {
+      return await client.info();
+    } catch (error) {
+      lastError = error;
+      if (error instanceof OpenCodeHttpError && error.status === 401) {
+        throw new BridgeError("OPENCODE_SPAWN_FAILED", "OpenCode server rejected the bridge password", {
+          cause: error,
+          details: { status: error.status },
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  throw new BridgeError("OPENCODE_SPAWN_FAILED", "Timed out waiting for OpenCode server", {
+    cause: lastError,
+    details: { timeout_ms: timeoutMs, stderr: stderr() },
+  });
+}
+
+async function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address === null || typeof address === "string") {
+          reject(new BridgeError("OPENCODE_SPAWN_FAILED", "Could not allocate a local port"));
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+  });
+}
+
+async function terminateProcess(
+  child: ChildProcess,
+  exitPromise: Promise<unknown>,
+): Promise<void> {
+  if (child.pid === undefined) return;
+  signalProcess(child, "SIGTERM");
+  const exited = await Promise.race([
+    exitPromise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
+  ]);
+  if (exited) return;
+  signalProcess(child, "SIGKILL");
+  await Promise.race([
+    exitPromise,
+    new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+  ]);
+}
+
+function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) return;
+  try {
+    if (process.platform === "win32") {
+      child.kill(signal);
+    } else {
+      process.kill(-child.pid, signal);
+    }
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Process already exited.
+    }
+  }
+}
+
+async function readLogTail(path: string): Promise<string> {
+  try {
+    const text = await readFile(path, "utf8");
+    return text.slice(-4000);
+  } catch {
+    return "";
+  }
+}
