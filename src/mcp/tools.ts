@@ -4,6 +4,7 @@ import { toErrorPayload } from "../errors.js";
 import type { TaskView } from "../types.js";
 import {
   AgentAbortInput,
+  AgentDiffInput,
   AgentHistoryInput,
   AgentListInput,
   AgentSpawnInput,
@@ -128,6 +129,49 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
           next_cursor: result.next_cursor,
           has_more: result.has_more,
           total_events: result.total,
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "agent_diff",
+    {
+      title: "Review task changes",
+      description:
+        "Return the Git status, changed/new/deleted/untracked files, line counts, and patch for a task worktree.",
+      inputSchema: AgentDiffInput,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+      },
+    },
+    async (input) => {
+      try {
+        const diff = await manager.diff(input.task_id, {
+          ...(input.file === undefined ? {} : { file: input.file }),
+          ...(input.max_chars === undefined ? {} : { maxChars: input.max_chars }),
+        });
+        return success({
+          ok: true,
+          task_id: diff.task_id,
+          available: diff.available,
+          ...(diff.reason === undefined ? {} : { reason: diff.reason }),
+          worktree_path: diff.worktree_path,
+          base_commit: diff.base_commit,
+          git_status: diff.git_status,
+          files: diff.files as unknown as Array<Record<string, unknown>>,
+          added: diff.added,
+          modified: diff.modified,
+          deleted: diff.deleted,
+          untracked: diff.untracked,
+          additions: diff.additions,
+          deletions: diff.deletions,
+          patch: diff.patch,
+          patch_truncated: diff.patch_truncated,
         });
       } catch (error) {
         return failure(error);

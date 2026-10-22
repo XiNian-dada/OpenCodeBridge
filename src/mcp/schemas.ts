@@ -62,6 +62,20 @@ export const AgentHistoryInput = z
 
 export const AgentAbortInput = z.object({ task_id: taskId }).strict();
 
+export const AgentDiffInput = z
+  .object({
+    task_id: taskId,
+    file: z.string().min(1).optional().describe("Only return the diff for this repository-relative file"),
+    max_chars: z
+      .number()
+      .int()
+      .min(1000)
+      .max(200000)
+      .optional()
+      .describe("Maximum patch characters to return (default 40000)"),
+  })
+  .strict();
+
 export const AgentListInput = z
   .object({
     status: z.enum(TASK_STATUSES).optional(),
