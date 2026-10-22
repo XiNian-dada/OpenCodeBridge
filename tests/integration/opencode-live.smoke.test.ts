@@ -22,9 +22,11 @@ describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
         compatibility: "2.1.x",
         startupTimeoutMs: 15000,
         logger: createLogger("silent"),
+        sandbox: { worktreePath: dir },
       });
 
       expect(managed.info.version).toMatch(/^2\.1\./);
+      expect(managed.sandboxed).toBe(true);
       const models = await managed.client.models();
       const free = models.find(
         (model) =>
