@@ -193,7 +193,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         binary: this.options.config.opencode.binary,
         cwd: task.worktree_path ?? task.repo_root,
         dataDir,
-        taskId: task.id,
+        taskId: task.opencode_task_id,
         configContent: { permissions: [...permissions], snapshots: false },
         compatibility: this.options.config.opencode.compatibility,
         startupTimeoutMs: this.options.config.opencode.startup_timeout_ms,
@@ -236,14 +236,31 @@ export class OpenCodeAdapter implements AgentAdapter {
 
       ensureNotAborted(context.signal);
       const variant = task.model_variant ?? undefined;
-      const session = await server.client.createSession({
-        title: `Bridge ${task.id}`,
-        model: {
-          providerID: task.provider_id,
-          id: model.id,
-          ...(variant === undefined ? {} : { variant }),
-        },
-      });
+      let session: OpenCodeSession;
+      if (task.session_id !== null) {
+        try {
+          session = await server.client.session(task.session_id);
+        } catch (error) {
+          throw new BridgeError("SESSION_LOST", "OpenCode session could not be resumed", {
+            cause: error,
+            details: { task_id: task.id, session_id: task.session_id },
+          });
+        }
+        context.emit({
+          source: "opencode",
+          event_type: "opencode.session.resumed",
+          payload: { session_id: session.id, turn: task.turn },
+        });
+      } else {
+        session = await server.client.createSession({
+          title: `Bridge ${task.id}`,
+          model: {
+            providerID: task.provider_id,
+            id: model.id,
+            ...(variant === undefined ? {} : { variant }),
+          },
+        });
+      }
 
       run = {
         sessionId: session.id,
