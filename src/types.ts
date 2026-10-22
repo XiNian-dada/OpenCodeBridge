@@ -76,6 +76,8 @@ export interface TaskRecord {
   task_type: TaskType;
   model: string;
   provider_id: string;
+  model_id: string;
+  model_variant: string | null;
   read_only: boolean;
   timeout_seconds: number;
   status: TaskStatus;

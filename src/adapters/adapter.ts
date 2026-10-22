@@ -40,6 +40,7 @@ export interface AbortResult {
 
 export interface AgentAdapter {
   readonly name: string;
+  readonly supportsWrites: boolean;
   probe(): Promise<AdapterProbe>;
   buildPrompt(task: TaskRecord): string;
   start(task: TaskRecord, prompt: string, context: AdapterContext): Promise<AdapterRunResult>;

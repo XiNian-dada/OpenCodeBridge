@@ -108,6 +108,13 @@ export class TaskManager {
     }
 
     const resolvedModel = this.options.modelPolicy.resolve(input.model);
+    if (!input.read_only && !this.options.adapter.supportsWrites) {
+      throw new BridgeError(
+        "SANDBOX_UNAVAILABLE",
+        "This adapter does not support writable tasks yet; use read_only=true or the mock adapter",
+        { details: { adapter: this.options.adapter.name } },
+      );
+    }
     const repo = await this.options.pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
 
     if (this.queue.size >= this.options.config.scheduler.max_queue) {
@@ -126,6 +133,8 @@ export class TaskManager {
       task_type: input.task_type,
       model: resolvedModel.model,
       provider_id: resolvedModel.provider_id,
+      model_id: resolvedModel.model_id,
+      model_variant: resolvedModel.variant,
       read_only: input.read_only,
       timeout_seconds: timeoutSeconds,
       status: "queued",
