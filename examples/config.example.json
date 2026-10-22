@@ -1,0 +1,38 @@
+{
+  "adapter": "mock",
+  "log_level": "info",
+  "scheduler": {
+    "max_concurrent": 2,
+    "max_queue": 10,
+    "default_timeout_seconds": 300,
+    "max_timeout_seconds": 1800
+  },
+  "models": {
+    "default": "mock/echo",
+    "allow": ["mock/echo"],
+    "expensive": [],
+    "allow_expensive": false,
+    "max_cost_usd": null,
+    "max_tokens": null
+  },
+  "security": {
+    "allowed_repo_roots": ["/Users/you/Code"],
+    "require_git_for_writes": true,
+    "allow_external_directories": false
+  },
+  "opencode": {
+    "binary": "opencode",
+    "compatibility": "2.1.x",
+    "startup_timeout_ms": 15000
+  },
+  "history": {
+    "default_limit": 20,
+    "max_limit": 100,
+    "max_payload_chars": 2000,
+    "max_delegation_chars": 50000
+  },
+  "mock": {
+    "scenario": "success",
+    "delay_ms": 20
+  }
+}

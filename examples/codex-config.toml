@@ -1,0 +1,8 @@
+[mcp_servers.opencode_bridge]
+command = "/opt/homebrew/opt/node@24/bin/node"
+args = ["/absolute/path/to/codex-opencode-bridge/dist/mcp/server.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+
+[mcp_servers.opencode_bridge.env]
+BRIDGE_CONFIG = "/Users/you/.config/codex-opencode-bridge/config.json"
