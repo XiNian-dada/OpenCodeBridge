@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 
 export interface WorktreeCreateResult {
   path: string;
+  git_dir: string;
   base_commit: string;
   main_worktree_dirty: boolean;
   main_worktree_changes: string[];
@@ -62,6 +63,13 @@ export class WorktreeManager {
       });
     }
 
+    const gitDirResult = await git(worktreePath, ["rev-parse", "--absolute-git-dir"]).catch(() => null);
+    if (gitDirResult === null || gitDirResult.stdout.trim() === "") {
+      throw new BridgeError("WORKTREE_CREATE_FAILED", "Could not resolve worktree Git directory", {
+        details: { task_id: task.id, worktree_path: worktreePath },
+      });
+    }
+    const gitDir = gitDirResult.stdout.trim();
     const mainStatus = await this.dirtyStatus(task.repo_root);
     this.logger.info(
       {
@@ -75,6 +83,7 @@ export class WorktreeManager {
 
     return {
       path: worktreePath,
+      git_dir: gitDir,
       base_commit: baseCommit,
       main_worktree_dirty: mainStatus.dirty,
       main_worktree_changes: mainStatus.files,

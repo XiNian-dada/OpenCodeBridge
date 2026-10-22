@@ -10,6 +10,7 @@ export interface SandboxProfileOptions {
   taskDir: string;
   tempDir: string;
   worktreePath: string;
+  gitDir?: string;
 }
 
 export function sandboxAvailable(): boolean {
@@ -25,6 +26,7 @@ export function buildSeatbeltProfile(options: SandboxProfileOptions): string {
     options.taskDir,
     options.tempDir,
     options.worktreePath,
+    ...(options.gitDir === undefined ? [] : [options.gitDir]),
     join(opencodeData, "log"),
     join(opencodeData, "shell"),
     join(opencodeData, "snapshot"),

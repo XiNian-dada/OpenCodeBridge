@@ -30,6 +30,7 @@ function task(repoRoot: string, baseCommit: string): TaskRecord {
     stage: "preparing",
     session_id: null,
     worktree_path: null,
+    worktree_git_dir: null,
     base_commit: baseCommit,
     created_at: new Date().toISOString(),
     started_at: null,

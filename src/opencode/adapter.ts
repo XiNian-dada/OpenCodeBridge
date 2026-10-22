@@ -175,6 +175,13 @@ export class OpenCodeAdapter implements AgentAdapter {
         { details: { task_id: task.id } },
       );
     }
+    if (!task.read_only && task.worktree_git_dir === null) {
+      throw new BridgeError(
+        "WORKTREE_CREATE_FAILED",
+        "Writable OpenCode task has no worktree Git metadata path",
+        { details: { task_id: task.id } },
+      );
+    }
 
     const dataDir = resolveDataDir(this.options.config);
     const permissions = task.read_only ? READ_ONLY_PERMISSIONS : WRITABLE_PERMISSIONS;
@@ -187,14 +194,19 @@ export class OpenCodeAdapter implements AgentAdapter {
         cwd: task.worktree_path ?? task.repo_root,
         dataDir,
         taskId: task.id,
-        configContent: { permissions: [...permissions] },
+        configContent: { permissions: [...permissions], snapshots: false },
         compatibility: this.options.config.opencode.compatibility,
         startupTimeoutMs: this.options.config.opencode.startup_timeout_ms,
         logger: this.options.logger,
         signal: context.signal,
         ...(task.read_only || task.worktree_path === null
           ? {}
-          : { sandbox: { worktreePath: task.worktree_path } }),
+          : {
+              sandbox: {
+                worktreePath: task.worktree_path,
+                gitDir: task.worktree_git_dir ?? undefined,
+              },
+            }),
       });
 
       context.emit({

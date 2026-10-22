@@ -29,6 +29,7 @@ function task(repoRoot: string, baseCommit: string | null, id = "task_worktree_t
     stage: "preparing",
     session_id: null,
     worktree_path: null,
+    worktree_git_dir: null,
     base_commit: baseCommit,
     created_at: new Date().toISOString(),
     started_at: null,
@@ -55,6 +56,7 @@ describe("WorktreeManager", () => {
       const created = await manager.create(task(repo, head));
       expect(created.path).toContain(join("data", "worktrees", "task_worktree_test"));
       expect(created.base_commit).toBe(head);
+      expect(created.git_dir).toContain(".git/worktrees/");
       expect(created.main_worktree_dirty).toBe(true);
       expect(created.main_worktree_changes).toContain("dirty.txt");
 

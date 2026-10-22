@@ -21,7 +21,7 @@ export interface ManagedOpenCodeServerOptions {
   logger: Logger;
   extraEnv?: Record<string, string>;
   signal?: AbortSignal;
-  sandbox?: { worktreePath: string };
+  sandbox?: { worktreePath: string; gitDir?: string };
 }
 
 export interface ManagedOpenCodeServer {
@@ -67,6 +67,7 @@ export async function startManagedOpenCodeServer(
       taskDir,
       tempDir,
       worktreePath: options.sandbox.worktreePath,
+      ...(options.sandbox.gitDir === undefined ? {} : { gitDir: options.sandbox.gitDir }),
     });
   }
 

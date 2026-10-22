@@ -84,6 +84,7 @@ export interface TaskRecord {
   stage: string;
   session_id: string | null;
   worktree_path: string | null;
+  worktree_git_dir: string | null;
   base_commit: string | null;
   created_at: string;
   started_at: string | null;

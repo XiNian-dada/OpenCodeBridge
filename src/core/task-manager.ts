@@ -150,6 +150,7 @@ export class TaskManager {
       stage: "queued",
       session_id: null,
       worktree_path: null,
+      worktree_git_dir: null,
       base_commit: repo.base_commit,
       created_at: createdAt,
       started_at: null,
@@ -436,6 +437,7 @@ export class TaskManager {
 
     const result = await this.options.worktrees.create(task);
     task.worktree_path = result.path;
+    task.worktree_git_dir = result.git_dir;
     task.base_commit = result.base_commit;
 
     this.append(task, "bridge", "worktree.created", {
