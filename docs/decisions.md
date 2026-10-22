@@ -72,3 +72,12 @@ Status: accepted for Phase 1
 - The live smoke test uses `resume: false`, so it exercises server startup,
   model discovery, session creation, prompt admission, and SSE without invoking
   a model provider.
+
+### Security verification notes
+
+- A live OpenCode 2.1.2 server was probed with `OPENCODE_CONFIG_CONTENT`. The
+  injected permission document appeared as the highest-priority config document,
+  so the read-only rules are actually loaded.
+- `GET /api/config` returns raw provider settings, including API keys. The bridge
+  must never call or expose this endpoint. The HTTP client intentionally has no
+  method for it.

@@ -278,3 +278,6 @@ The live test passed against OpenCode 2.1.2 on this machine.
 
 See `docs/decisions.md` for technical decisions and
 `examples/codex-config.toml` for a ready-to-edit Codex configuration.
+
+Additional note: OpenCode's `/api/config` endpoint returns raw provider
+credentials. The bridge never calls it and does not expose it through MCP.
