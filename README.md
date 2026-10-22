@@ -248,8 +248,10 @@ were a tool record.
   not carried into the worktree.
 - Writable sessions are edit-only: shell, external directory, web, subagent,
   and question permissions are denied.
-- The Seatbelt profile confines writes to the worktree, task data/temp
-  directories, and OpenCode's own state/cache/log directories.
+- The Seatbelt profile confines writes to the worktree, its task-local Git
+  metadata, task data/temp directories, and OpenCode's own state/cache/log
+  directories. OpenCode snapshots are disabled, and the main repository's Git
+  object store is not writable.
 - The model allowlist is default-deny.
 - Expensive models require a local configuration change; a task cannot grant
   itself permission.
@@ -263,7 +265,8 @@ were a tool record.
 reads broadly; read-only tasks rely on OpenCode permissions rather than an OS
 read sandbox. Do not run untrusted repositories without reviewing this boundary.
 Writable tasks are edit-only, so OpenCode cannot run tests. Worktrees and logs
-are retained until cleanup support is added. Tasks still live inside the MCP
+are retained until cleanup support is added. The main repository's Git object
+store is deliberately not writable from the sandbox. Tasks still live inside the MCP
 process; if Codex or the MCP server exits, running tasks do not survive until
 the Phase 4 daemon exists.
 
@@ -273,7 +276,7 @@ the Phase 4 daemon exists.
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-The default suite has 71 passing tests. It covers state transitions, queues,
+The default suite has 72 passing tests. It covers state transitions, queues,
 model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
 startup, worktrees, diffs, Seatbelt write confinement, and fake OpenCode adapter

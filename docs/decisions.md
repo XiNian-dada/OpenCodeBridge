@@ -91,8 +91,13 @@ Status: accepted for Phase 1
 - Diff inspection covers tracked modifications, staged additions, deletions,
   untracked files, line counts, and a size-limited patch.
 - On macOS, writable servers run under `sandbox-exec` with a generated Seatbelt
-  profile. Writes are confined to the worktree, task data directory, task temp
-  directory, and OpenCode's own log/shell/snapshot/state/cache directories.
+  profile. Writes are confined to the worktree, the task-local worktree Git
+  metadata directory, task data/temp directories, and OpenCode's own
+  log/shell/snapshot/state/cache directories.
+- OpenCode snapshots are disabled for bridge sessions. The main repository's Git
+  object store is deliberately not writable; a worktree `git add` attempt is
+  denied by the sandbox. Diff inspection only reads the working tree and the
+  recorded base commit.
 - Writable OpenCode permissions are edit-only: edit/write/patch are allowed,
   while shell, external directories, web tools, subagents, and questions remain
   denied. Test execution stays with Codex in Phase 3.
