@@ -54,6 +54,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 export class MockAdapter implements AgentAdapter {
   readonly name = "mock";
   readonly supportsWrites = true;
+  readonly requiresIsolatedWorktree = false;
   private readonly scenario: MockScenario;
   private readonly delayMs: number;
   private readonly aborted = new Set<string>();

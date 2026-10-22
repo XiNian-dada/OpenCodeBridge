@@ -96,6 +96,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode";
   readonly supportsWrites = false;
+  readonly requiresIsolatedWorktree = true;
   private readonly active = new Map<string, ActiveRun>();
   private readonly serverStarter: (options: ManagedOpenCodeServerOptions) => Promise<ManagedOpenCodeServer>;
 
@@ -132,7 +133,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       "You are executing a delegated task under bridge-enforced constraints.",
       `Task ID: ${task.id}`,
       `Task type: ${task.task_type}`,
-      `Workspace: ${task.repo_root}`,
+      `Workspace: ${task.worktree_path ?? task.repo_root}`,
       "Mode: READ-ONLY. Do not modify files. Do not run commands that modify files.",
       "Do not access paths outside the workspace, use network tools, launch subagents, or change configuration.",
       "If the task cannot be completed within these constraints, report the blocker instead of expanding scope.",
@@ -162,7 +163,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     try {
       server = await this.serverStarter({
         binary: this.options.config.opencode.binary,
-        cwd: task.repo_root,
+        cwd: task.worktree_path ?? task.repo_root,
         dataDir,
         taskId: task.id,
         configContent: { permissions: [...READ_ONLY_PERMISSIONS] },
@@ -225,7 +226,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         id: session.id,
         model: task.model,
         provider_id: task.provider_id,
-        worktree_path: null,
+        worktree_path: task.worktree_path,
       });
 
       const eventsPromise = this.consumeEvents(run, context);
