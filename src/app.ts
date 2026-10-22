@@ -3,12 +3,15 @@ import type { AgentAdapter } from "./adapters/adapter.js";
 import { MockAdapter } from "./adapters/mock/mock-adapter.js";
 import { OpenCodeAdapter } from "./opencode/adapter.js";
 import { EventStore } from "./core/event-store.js";
+import { DiffManager } from "./git/diff-manager.js";
+import { WorktreeManager } from "./git/worktree-manager.js";
 import { Redactor } from "./core/redact.js";
 import { TaskManager } from "./core/task-manager.js";
 import { BridgeError } from "./errors.js";
 import type { Logger } from "./logging.js";
 import { ModelPolicy } from "./policy/model-policy.js";
 import { PathPolicy } from "./policy/path-policy.js";
+import { resolveDataDir } from "./paths.js";
 
 export interface BridgeServices {
   config: BridgeConfig;
@@ -47,6 +50,11 @@ export function createServices(
     config.security.allowed_repo_roots,
     config.security.require_git_for_writes,
   );
+  const worktrees = new WorktreeManager({
+    dataDir: resolveDataDir(config),
+    logger,
+  });
+  const diffs = new DiffManager();
   const manager = new TaskManager({
     config,
     adapter,
@@ -54,6 +62,8 @@ export function createServices(
     pathPolicy,
     eventStore,
     logger,
+    worktrees,
+    diffs,
   });
 
   return { config, adapter, manager, logger };

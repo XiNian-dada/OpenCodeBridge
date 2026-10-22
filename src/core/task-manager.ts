@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BridgeConfig } from "../config.js";
+import type { DiffManager, DiffResult } from "../git/diff-manager.js";
+import type { WorktreeManager } from "../git/worktree-manager.js";
 import { BridgeError, isBridgeError, toErrorPayload } from "../errors.js";
 import type { Logger } from "../logging.js";
 import type { ModelPolicy } from "../policy/model-policy.js";
@@ -45,12 +47,19 @@ export interface TaskManagerOptions {
   pathPolicy: PathPolicy;
   eventStore: EventStore;
   logger: Logger;
+  worktrees?: WorktreeManager;
+  diffs?: DiffManager;
   now?: () => Date;
   idFactory?: () => string;
 }
 
 export interface TaskHistoryResult extends HistoryPage {
   task: TaskHistorySummary;
+}
+
+export interface TaskDiffResult extends DiffResult {
+  task_id: string;
+  reason?: "no_worktree";
 }
 
 export class TaskManager {
@@ -220,6 +229,42 @@ export class TaskManager {
     return values.slice(0, filter.limit).map((task) => this.toView(task));
   }
 
+  async diff(
+    taskId: string,
+    options: { file?: string; maxChars?: number } = {},
+  ): Promise<TaskDiffResult> {
+    const task = this.requireTask(taskId);
+    if (task.worktree_path === null || task.base_commit === null) {
+      return {
+        task_id: task.id,
+        reason: "no_worktree",
+        available: false,
+        worktree_path: task.worktree_path,
+        base_commit: task.base_commit,
+        git_status: "",
+        files: [],
+        added: [],
+        modified: [],
+        deleted: [],
+        untracked: [],
+        additions: 0,
+        deletions: 0,
+        patch: "",
+        patch_truncated: false,
+      };
+    }
+    if (this.options.diffs === undefined) {
+      throw new BridgeError("WORKTREE_CREATE_FAILED", "Diff manager is not configured");
+    }
+    const result = await this.options.diffs.getDiff({
+      worktreePath: task.worktree_path,
+      baseCommit: task.base_commit,
+      ...(options.file === undefined ? {} : { file: options.file }),
+      ...(options.maxChars === undefined ? {} : { maxChars: options.maxChars }),
+    });
+    return { task_id: task.id, ...result };
+  }
+
   async abort(taskId: string): Promise<AbortTaskResult> {
     const task = this.requireTask(taskId);
     if (isTerminal(task.status)) {
@@ -356,16 +401,16 @@ export class TaskManager {
       emit: (event: AdapterEventInput) => this.handleAdapterEvent(task, event),
     };
 
-    const prompt = this.options.adapter.buildPrompt(task);
-    this.append(
-      task,
-      "bridge",
-      "prompt.sent",
-      { prompt, model: task.model, provider_id: task.provider_id },
-      { maxPayloadChars: this.options.config.history.max_delegation_chars },
-    );
-
     try {
+      await this.prepareWorkspace(task);
+      const prompt = this.options.adapter.buildPrompt(task);
+      this.append(
+        task,
+        "bridge",
+        "prompt.sent",
+        { prompt, model: task.model, provider_id: task.provider_id },
+        { maxPayloadChars: this.options.config.history.max_delegation_chars },
+      );
       const result = await this.options.adapter.start(task, prompt, context);
       this.finishRun(task, handle, result);
     } catch (error) {
@@ -374,6 +419,36 @@ export class TaskManager {
       clearTimeout(timer);
       if (this.running.get(task.id) === handle) this.running.delete(task.id);
       this.pump();
+    }
+  }
+
+  private async prepareWorkspace(task: TaskRecord): Promise<void> {
+    if (task.read_only || !this.options.adapter.requiresIsolatedWorktree) return;
+    if (this.options.worktrees === undefined) {
+      throw new BridgeError("WORKTREE_CREATE_FAILED", "Worktree manager is not configured");
+    }
+
+    task.stage = "preparing_workspace";
+    this.append(task, "bridge", "worktree.creating", {
+      repo_root: task.repo_root,
+      base_commit: task.base_commit,
+    });
+
+    const result = await this.options.worktrees.create(task);
+    task.worktree_path = result.path;
+    task.base_commit = result.base_commit;
+
+    this.append(task, "bridge", "worktree.created", {
+      worktree_path: result.path,
+      base_commit: result.base_commit,
+      main_worktree_dirty: result.main_worktree_dirty,
+      main_worktree_changes: result.main_worktree_changes,
+    });
+    if (result.main_worktree_dirty) {
+      this.append(task, "system", "repo.main_worktree_dirty", {
+        repo_root: task.repo_root,
+        files: result.main_worktree_changes,
+      });
     }
   }
 
