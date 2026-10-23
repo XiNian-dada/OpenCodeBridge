@@ -10,7 +10,8 @@
   },
   "packageManager": "pnpm@10.11.0",
   "bin": {
-    "bridge-mcp": "./dist/mcp/server.js"
+    "bridge-mcp": "./dist/mcp/server.js",
+    "bridge": "./dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -18,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:mcp": "tsx src/mcp/server.ts",
-    "start:mcp": "node dist/mcp/server.js"
+    "start:mcp": "node dist/mcp/server.js",
+    "dev:cli": "tsx src/cli/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
