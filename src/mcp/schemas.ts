@@ -52,6 +52,12 @@ export const AgentHistoryInput = z
       .regex(/^\d+$/)
       .optional()
       .describe("Opaque cursor for loading older events"),
+    after: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Only return events after this sequence (forward follow)"),
     event_types: z
       .array(z.string().min(1))
       .max(50)

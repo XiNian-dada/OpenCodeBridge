@@ -122,6 +122,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
         const result = await service.history(input.task_id, {
           limit,
           ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          ...(input.after === undefined ? {} : { after: input.after }),
           ...(input.event_types === undefined ? {} : { types: input.event_types }),
         });
         return success({
