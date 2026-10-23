@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { BridgeConfig } from "../config.js";
-import type { DiffManager, DiffResult } from "../git/diff-manager.js";
+import type { DiffManager } from "../git/diff-manager.js";
+import type { TaskDiffResult, TaskHistoryResult } from "./task-service.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
 import { BridgeError, isBridgeError, toErrorPayload } from "../errors.js";
 import type { Logger } from "../logging.js";
@@ -10,7 +11,6 @@ import type { PathPolicy } from "../policy/path-policy.js";
 import type {
   AbortTaskResult,
   BridgeEvent,
-  HistoryPage,
   HistoryQuery,
   SpawnResult,
   SpawnTaskInput,
@@ -52,15 +52,6 @@ export interface TaskManagerOptions {
   diffs?: DiffManager;
   now?: () => Date;
   idFactory?: () => string;
-}
-
-export interface TaskHistoryResult extends HistoryPage {
-  task: TaskHistorySummary;
-}
-
-export interface TaskDiffResult extends DiffResult {
-  task_id: string;
-  reason?: "no_worktree";
 }
 
 export class TaskManager {

@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { BridgeServices } from "../app.js";
+import type { ToolServices } from "../core/task-service.js";
 import { toErrorPayload } from "../errors.js";
 import type { TaskView } from "../types.js";
 import {
@@ -38,8 +38,8 @@ function taskPayload(task: TaskView): Record<string, unknown> {
   return task as unknown as Record<string, unknown>;
 }
 
-export function registerAgentTools(server: McpServer, services: BridgeServices): void {
-  const { manager, config } = services;
+export function registerAgentTools(server: McpServer, services: ToolServices): void {
+  const { service, config } = services;
 
   server.registerTool(
     "agent_spawn",
@@ -56,7 +56,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
     },
     async (input) => {
       try {
-        const result = await manager.spawn({
+        const result = await service.spawn({
           task: input.task,
           repo_root: input.repo_root,
           task_type: input.task_type,
@@ -92,7 +92,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
     },
     async (input) => {
       try {
-        return success({ ok: true, task: taskPayload(manager.status(input.task_id)) });
+        return success({ ok: true, task: taskPayload(await service.status(input.task_id)) });
       } catch (error) {
         return failure(error);
       }
@@ -118,7 +118,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
           input.limit ?? config.history.default_limit,
           config.history.max_limit,
         );
-        const result = manager.history(input.task_id, {
+        const result = await service.history(input.task_id, {
           limit,
           ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
           ...(input.event_types === undefined ? {} : { types: input.event_types }),
@@ -152,7 +152,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
     },
     async (input) => {
       try {
-        const diff = await manager.diff(input.task_id, {
+        const diff = await service.diff(input.task_id, {
           ...(input.file === undefined ? {} : { file: input.file }),
           ...(input.max_chars === undefined ? {} : { maxChars: input.max_chars }),
         });
@@ -195,7 +195,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
     },
     async (input) => {
       try {
-        const result = await manager.message(input.task_id, input.message);
+        const result = await service.message(input.task_id, input.message);
         return success({
           ok: true,
           task: taskPayload(result.task),
@@ -223,7 +223,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
     },
     async (input) => {
       try {
-        const result = await manager.abort(input.task_id);
+        const result = await service.abort(input.task_id);
         return success({
           ok: true,
           task: taskPayload(result.task),
@@ -250,7 +250,7 @@ export function registerAgentTools(server: McpServer, services: BridgeServices):
     },
     async (input) => {
       try {
-        const tasks = manager.list({
+        const tasks = await service.list({
           ...(input.status === undefined ? {} : { status: input.status }),
           ...(input.repo_root === undefined ? {} : { repo_root: input.repo_root }),
           ...(input.model === undefined ? {} : { model: input.model }),

@@ -7,14 +7,14 @@ import { DiffManager } from "./git/diff-manager.js";
 import { WorktreeManager } from "./git/worktree-manager.js";
 import { Redactor } from "./core/redact.js";
 import { TaskManager } from "./core/task-manager.js";
+import { LocalTaskService, type ToolServices } from "./core/task-service.js";
 import { BridgeError } from "./errors.js";
 import type { Logger } from "./logging.js";
 import { ModelPolicy } from "./policy/model-policy.js";
 import { PathPolicy } from "./policy/path-policy.js";
 import { resolveDataDir } from "./paths.js";
 
-export interface BridgeServices {
-  config: BridgeConfig;
+export interface BridgeServices extends ToolServices {
   adapter: AgentAdapter;
   manager: TaskManager;
   logger: Logger;
@@ -66,5 +66,5 @@ export function createServices(
     diffs,
   });
 
-  return { config, adapter, manager, logger };
+  return { config, adapter, manager, logger, service: new LocalTaskService(manager) };
 }

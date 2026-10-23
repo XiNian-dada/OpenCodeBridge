@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createAdapter, createServices, type BridgeServices } from "../app.js";
+import type { ToolServices } from "../core/task-service.js";
 import { loadConfig, type BridgeConfig } from "../config.js";
 import { toErrorPayload } from "../errors.js";
 import { createLogger, type Logger } from "../logging.js";
@@ -25,7 +26,7 @@ function instructions(config: BridgeConfig): string {
   ].join("\n");
 }
 
-export function createMcpServer(services: BridgeServices): McpServer {
+export function createMcpServer(services: ToolServices): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { instructions: instructions(services.config) },
