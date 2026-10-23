@@ -117,3 +117,22 @@ Status: accepted for Phase 1
   existing session can be loaded and prompted again.
 - Only one active task is allowed per lineage; follow-up messages return
   `TASK_BUSY` while another turn is running.
+
+## Phase 4 update
+
+- SQLite is the source of truth for tasks, events, sessions, worktrees, and model
+  usage. The schema is migration-versioned via `PRAGMA user_version` and a
+  `schema_migrations` audit table.
+- The MCP adapter is thin by default: it connects to a local daemon over a Unix
+  socket. The daemon owns the queue, task manager, adapter, and OpenCode
+  processes. MCP exit no longer stops tasks.
+- Socket access is restricted by a `0700` parent directory and a `0600` socket.
+  The daemon state file is also `0600`.
+- On daemon startup, persisted non-terminal tasks are marked `interrupted` with
+  `SESSION_LOST`. They are not re-executed, because repeating a partially
+  executed coding task could duplicate or corrupt changes. Worktrees and events
+  are retained.
+- `BRIDGE_INPROCESS=1` is a test/development fallback only; it does not survive
+  MCP exit and is not the default.
+- Model usage is persisted separately from task state. Approvals and cleanup
+  records have tables reserved for Phase 5 but no destructive automation yet.

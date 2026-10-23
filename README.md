@@ -3,10 +3,10 @@
 An MCP bridge that lets Codex delegate bounded coding tasks to OpenCode while
 keeping task state, prompts, events, and cancellation under bridge control.
 
-> **Phase 3 status:** isolated Git worktrees, diff inspection, and an edit-only
-> writable OpenCode mode under the macOS Seatbelt sandbox are implemented.
-> Shell execution remains disabled for writable tasks, and automatic cleanup,
-> SQLite persistence, and the daemon are not implemented yet.
+> **Phase 4 status:** SQLite persistence, an auto-started local daemon, Unix-socket
+> IPC, and restart recovery are implemented. Tasks survive MCP adapter restarts.
+> A daemon restart marks unfinished tasks interrupted instead of re-running them.
+> Automatic cleanup and the CLI remain future work.
 
 ## What works now
 
@@ -32,6 +32,10 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Session continuation through `agent_message`, using the same OpenCode session,
   workspace, model policy, and task lineage
 - Edit-only writable mode under macOS `sandbox-exec` write confinement
+- SQLite persistence for tasks, events, sessions, worktrees, and model usage
+- Auto-started local daemon over a private Unix socket
+- Task survival across MCP adapter restarts
+- Safe restart recovery: unfinished tasks become `interrupted`, never re-run
 
 ## Requirements
 
@@ -42,6 +46,7 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Codex CLI with MCP support (0.152.0 tested)
 - OpenCode **2.1.x** for the real adapter (v2.1.2 tested)
 - macOS for writable OpenCode tasks (`sandbox-exec`); other platforms are read-only
+- The daemon starts automatically when the MCP server connects
 
 Node 23 is EOL and is not supported. This machine has a keg-only Homebrew Node 24:
 
@@ -140,6 +145,31 @@ Environment overrides: `BRIDGE_CONFIG`, `BRIDGE_ADAPTER`, `BRIDGE_MODEL`,
 `BRIDGE_ALLOWED_ROOTS` (colon-separated), `BRIDGE_MAX_CONCURRENT`,
 `BRIDGE_MAX_QUEUE`, `BRIDGE_DEFAULT_TIMEOUT_SECONDS`, `BRIDGE_LOG_LEVEL`,
 `BRIDGE_MOCK_SCENARIO`, `BRIDGE_MOCK_DELAY_MS`.
+
+## Daemon and storage
+
+By default the MCP server connects to a long-lived local daemon. If no daemon is
+running, the MCP server starts one in the background and waits for its socket.
+
+Files are stored under `data_dir` (default
+`~/Library/Application Support/codex-opencode-bridge` on macOS or
+`~/.local/share/codex-opencode-bridge` on Linux):
+
+- `bridge.sqlite` — tasks, events, sessions, worktrees, model usage
+- `bridge.sock` — Unix socket, mode `0600` inside a `0700` directory
+- `daemon.json` — daemon PID and socket metadata, mode `0600`
+- `logs/daemon.log` — daemon log
+- `tasks/<task-id>/` — per-task OpenCode database and sandbox files
+- `worktrees/<task-id>/` — writable task worktrees
+
+Closing Codex or the MCP adapter does not stop the daemon or running tasks.
+If the daemon itself restarts, tasks that were queued/running are marked
+`interrupted` with `SESSION_LOST`; they are never automatically re-executed.
+Existing events, logs, and worktrees are retained for review.
+
+For tests and development only, set `BRIDGE_INPROCESS=1` to run the task manager
+inside the MCP process. That mode does not survive MCP exit and does not use the
+daemon.
 
 ## Connect Codex
 
@@ -252,7 +282,7 @@ Mock events are explicitly mock-labelled. Real OpenCode events are obtained from
 the session API and SSE stream; no execution summary is synthesized as if it
 were a tool record.
 
-## Security boundaries in Phase 2
+## Security boundaries in Phase 4
 
 - Only paths under `security.allowed_repo_roots` are accepted.
 - Writable OpenCode tasks are enabled only on macOS with `sandbox-exec`.
@@ -271,6 +301,8 @@ were a tool record.
   password, and is killed as a process group after the task.
 - History payloads redact common secret keys and reject full process
   environments. This is not a substitute for a filesystem sandbox.
+- The daemon socket is accessible only to the current user through directory and
+  socket permissions (`0700` / `0600`).
 - MCP logs go to stderr. stdout is reserved for the JSON-RPC protocol.
 
 **Known limitations:** the Seatbelt profile confines writes but still allows
@@ -278,9 +310,9 @@ reads broadly; read-only tasks rely on OpenCode permissions rather than an OS
 read sandbox. Do not run untrusted repositories without reviewing this boundary.
 Writable tasks are edit-only, so OpenCode cannot run tests. Worktrees and logs
 are retained until cleanup support is added. The main repository's Git object
-store is deliberately not writable from the sandbox. Tasks still live inside the MCP
-process; if Codex or the MCP server exits, running tasks do not survive until
-the Phase 4 daemon exists.
+store is deliberately not writable from the sandbox. Tasks now survive MCP
+adapter exits through the daemon, but a daemon crash cannot resume an in-flight
+OpenCode turn; those tasks are marked interrupted and preserved for review.
 
 ## Tests
 
@@ -288,11 +320,12 @@ the Phase 4 daemon exists.
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-The default suite has 75 passing tests. It covers state transitions, queues,
+The default suite has 81 passing tests. It covers state transitions, queues,
 model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
-startup, worktrees, diffs, session continuation, Seatbelt write confinement, and
-fake OpenCode adapter lifecycles. All default tests are free.
+startup, worktrees, diffs, session continuation, SQLite persistence, daemon
+IPC/reconnect, restart recovery, Seatbelt write confinement, and fake OpenCode
+adapter lifecycles. All default tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a
 prompt with `resume: false`):
@@ -311,7 +344,7 @@ the version and models, creates a session, admits a no-reply prompt, and observe
 |---|---|
 | 2 | **Done:** real OpenCode adapter, private server, SSE, abort, model discovery, usage readback |
 | 3 | **Done:** Git worktrees, diff inspection, macOS Seatbelt write confinement, edit-only writable tasks |
-| 4 | SQLite, daemon, Unix socket IPC, queue persistence, restart recovery, usage records |
+| 4 | **Done:** SQLite, daemon, Unix socket IPC, queue persistence, restart recovery, usage records |
 | 5 | Budget enforcement, log redaction hardening, cleanup plans, independent user approval |
 | 6 | CLI (`bridge tasks/status/logs/diff`), live log follow, install/uninstall docs, end-to-end acceptance scripts |
 
