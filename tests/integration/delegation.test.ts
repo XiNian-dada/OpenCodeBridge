@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createHarness, spawnInput } from "../helpers/fixtures.js";
 
 describe("delegation discovery and waiting", () => {
@@ -19,6 +21,156 @@ describe("delegation discovery and waiting", () => {
       expect(capabilities.budgets).toMatchObject({ max_tokens: 1000, enforcement: "soft" });
       expect(capabilities.execution.write_isolation).toBe("simulated");
       expect(h.services.manager.list({ limit: 10 })).toEqual([]);
+    } finally { await h.cleanup(); }
+  });
+
+  it("preflights path, model, workspace and permissions without creating a task", async () => {
+    const h = await createHarness();
+    try {
+      const result = await h.services.service.preflight({
+        repo_root: h.repoRoot,
+        read_only: true,
+      });
+      expect(result.workspace.kind).toBe("repo_root");
+      expect(result.workspace.path).toBe(h.repoRoot);
+      expect(result.workspace.git_top_level).not.toBeNull();
+      expect(result.workspace.base_commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(result.model).toMatchObject({
+        model: "mock/echo",
+        permitted: true,
+        availability: "unverified_until_start",
+      });
+      expect(result.permissions).toMatchObject({
+        read: true,
+        glob: true,
+        grep: true,
+        edit: false,
+        write: false,
+        shell: false,
+        web: false,
+        subagent: false,
+      });
+      expect(result.isolation.write_isolation).toBe("simulated");
+      expect(result.budgets.hard_limits).toContain("task_timeout");
+      expect(result.unverified.length).toBeGreaterThan(0);
+      expect(h.services.manager.list({ limit: 10 })).toEqual([]);
+
+      await expect(
+        h.services.service.preflight({ repo_root: "/", read_only: true }),
+      ).rejects.toMatchObject({ code: "REPO_NOT_ALLOWED" });
+      await expect(
+        h.services.service.preflight({
+          repo_root: h.repoRoot,
+          read_only: true,
+          model: "forbidden/model",
+        }),
+      ).rejects.toMatchObject({ code: "MODEL_NOT_ALLOWED" });
+    } finally { await h.cleanup(); }
+  });
+
+  it("returns a delivery package with simulated commands and explicit verification gaps", async () => {
+    const h = await createHarness();
+    try {
+      const { task } = await h.services.service.spawn({
+        ...spawnInput(h.repoRoot),
+        read_only: true,
+      });
+      await h.services.manager.waitForTerminal(task.task_id, 5000);
+      const delivery = await h.services.service.delivery({ task_id: task.task_id });
+      expect(delivery.status).toBe("completed");
+      expect(delivery.git).toMatchObject({ available: false, reason: "no_worktree" });
+      expect(delivery.model.simulated).toBe(true);
+      expect(delivery.model.verified).toBe(false);
+      expect(delivery.commands.length).toBeGreaterThan(0);
+      expect(delivery.commands[0]).toMatchObject({
+        source: "simulated",
+        verified_by_bridge: false,
+      });
+      expect(delivery.verification.status).toBe("simulated");
+      expect(delivery.verification.tests_run_by_bridge).toBe(false);
+      expect(delivery.unverified.length).toBeGreaterThan(0);
+    } finally { await h.cleanup(); }
+  });
+
+  it("builds a hashed minimal context snapshot and lets a follow-up request more files", async () => {
+    const h = await createHarness();
+    try {
+      await writeFile(join(h.repoRoot, "extra.txt"), "extra context\n", "utf8");
+      const preflight = await h.services.service.preflight({
+        repo_root: h.repoRoot,
+        read_only: true,
+        context_files: ["README.md"],
+      });
+      expect(preflight.workspace.kind).toBe("context_snapshot");
+      expect(preflight.context.enabled).toBe(true);
+      expect(preflight.context.files).toHaveLength(1);
+      expect(preflight.context.files[0]?.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(preflight.context.total_bytes).toBeGreaterThan(0);
+
+      await expect(
+        h.services.service.preflight({
+          repo_root: h.repoRoot,
+          read_only: true,
+          context_files: ["../outside.txt"],
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      const { task } = await h.services.service.spawn({
+        ...spawnInput(h.repoRoot),
+        read_only: true,
+        context_files: ["README.md"],
+      });
+      await h.services.manager.waitForTerminal(task.task_id, 5000);
+      const first = await h.services.service.delivery({ task_id: task.task_id });
+      expect(first.context.verified).toBe(true);
+      expect(first.context.files.map((file) => file.path)).toEqual(["README.md"]);
+      expect(first.context.path).not.toBeNull();
+
+      const followUp = await h.services.service.message(
+        task.task_id,
+        "Use the extra context file as well.",
+        ["extra.txt"],
+      );
+      await h.services.manager.waitForTerminal(followUp.task.task_id, 5000);
+      const second = await h.services.service.delivery({ task_id: followUp.task.task_id });
+      expect(second.context.verified).toBe(true);
+      expect(second.context.files.map((file) => file.path).sort()).toEqual(["README.md", "extra.txt"]);
+      expect(second.context.total_bytes).toBeGreaterThan(first.context.total_bytes);
+    } finally { await h.cleanup(); }
+  });
+
+  it("parses structured review findings from the final assistant message", async () => {
+    const h = await createHarness();
+    try {
+      const original = h.adapter.start.bind(h.adapter);
+      h.adapter.start = async (task, prompt, context) => {
+        const result = await original(task, prompt, context);
+        context.emit({
+          source: "opencode",
+          event_type: "opencode.message",
+          payload: {
+            role: "assistant",
+            text: "```json\n{\"findings\":[{\"location\":\"src/a.ts:12\",\"trigger\":\"empty input\",\"evidence\":\"observed throw\",\"confidence\":\"reproduced\"}]}\n```",
+          },
+        });
+        return result;
+      };
+      const { task } = await h.services.service.spawn({
+        ...spawnInput(h.repoRoot),
+        read_only: true,
+        task_type: "review",
+      });
+      await h.services.manager.waitForTerminal(task.task_id, 5000);
+      const delivery = await h.services.service.delivery({ task_id: task.task_id });
+      expect(delivery.findings.verified).toBe(true);
+      expect(delivery.findings.items).toEqual([
+        {
+          location: "src/a.ts:12",
+          trigger: "empty input",
+          evidence: "observed throw",
+          confidence: "reproduced",
+        },
+      ]);
     } finally { await h.cleanup(); }
   });
 

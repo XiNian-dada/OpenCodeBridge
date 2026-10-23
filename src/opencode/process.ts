@@ -2,10 +2,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { BridgeError, isBridgeError } from "../errors.js";
-import { SANDBOX_EXEC, sandboxAvailable, writeSeatbeltProfile } from "../security/sandbox.js";
+import {
+  SANDBOX_EXEC,
+  sandboxAvailable,
+  writeSeatbeltProfile,
+  type SandboxMode,
+} from "../security/sandbox.js";
 import type { Logger } from "../logging.js";
 import { OpenCodeHttpClient, OpenCodeHttpError } from "./http-client.js";
 import type { OpenCodeInfo } from "./types.js";
@@ -21,7 +27,7 @@ export interface ManagedOpenCodeServerOptions {
   logger: Logger;
   extraEnv?: Record<string, string>;
   signal?: AbortSignal;
-  sandbox?: { worktreePath: string; gitDir?: string };
+  sandbox?: { mode?: SandboxMode; worktreePath: string; gitDir?: string };
 }
 
 export interface ManagedOpenCodeServer {
@@ -61,9 +67,10 @@ export async function startManagedOpenCodeServer(
   let profilePath: string | null = null;
   if (options.sandbox !== undefined) {
     if (!sandboxAvailable()) {
-      throw new BridgeError("SANDBOX_UNAVAILABLE", "Writable OpenCode tasks require macOS sandbox-exec");
+      throw new BridgeError("SANDBOX_UNAVAILABLE", "OpenCode sandboxing requires macOS sandbox-exec");
     }
     profilePath = await writeSeatbeltProfile({
+      mode: options.sandbox.mode ?? "write",
       taskDir,
       tempDir,
       worktreePath: options.sandbox.worktreePath,
@@ -76,16 +83,18 @@ export async function startManagedOpenCodeServer(
   let stderrTail = "";
 
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...sanitizeEnvironment(process.env),
     ...options.extraEnv,
     OPENCODE_SERVER_PASSWORD: password,
     OPENCODE_DB: join(taskDir, "opencode.db"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(options.configContent),
     OPENCODE_CONFIG_PROJECT_DISABLE: "1",
     OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    OPENCODE_DISABLE_TELEMETRY: "1",
+    DO_NOT_TRACK: "1",
     ...(profilePath === null ? {} : { TMPDIR: tempDir, TMP: tempDir, TEMP: tempDir }),
   };
-  delete env.OPENCODE_PASSWORD;
+  if (env.HOME === undefined || env.HOME === "") env.HOME = homedir();
 
   let child: ChildProcess;
   try {
@@ -287,4 +296,59 @@ async function readLogTail(path: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+const SAFE_ENV_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LANGUAGE",
+  "TERM",
+  "COLORTERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+]);
+
+const SAFE_ENV_PREFIXES = ["LC_", "XDG_"];
+
+// Model transport needs provider credentials. Everything else from the parent
+// environment (cloud CLIs, Git hosts, SSH agents, CI tokens) is removed.
+const PROVIDER_ENV_PREFIXES = [
+  "ANTHROPIC_",
+  "OPENAI_",
+  "OPENROUTER_",
+  "DEEPSEEK_",
+  "GEMINI_",
+  "GOOGLE_",
+  "GOOGLE_GENERATIVE_AI_",
+  "MISTRAL_",
+  "GROQ_",
+  "XAI_",
+  "COHERE_",
+  "TOGETHER_",
+  "FIREWORKS_",
+  "PERPLEXITY_",
+  "AZURE_OPENAI_",
+  "OLLAMA_",
+];
+
+export function sanitizeEnvironment(input: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const output: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined) continue;
+    if (
+      SAFE_ENV_KEYS.has(key) ||
+      SAFE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+      PROVIDER_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
+    ) {
+      output[key] = value;
+    }
+  }
+  return output;
 }

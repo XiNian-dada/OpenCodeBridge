@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
+  buildReadSeatbeltProfile,
   buildSeatbeltProfile,
   sandboxAvailable,
   writeSeatbeltProfile,
@@ -32,6 +33,19 @@ describe("macOS sandbox profile", () => {
         gitDir: "/Users/example/repo/.git/worktrees/task",
       }),
     ).toContain('(subpath "/Users/example/repo/.git/worktrees/task")');
+  });
+
+  it("builds a read profile that hides the home directory and external mounts", () => {
+    const profile = buildReadSeatbeltProfile({
+      taskDir: "/private/tmp/task",
+      tempDir: "/private/tmp/task/tmp",
+      worktreePath: "/Users/example/worktree",
+    });
+    expect(profile).toContain('(deny file-read-data (subpath "/Users"))');
+    expect(profile).toContain('(deny file-read-data (subpath "/Volumes"))');
+    expect(profile).toContain('(deny file-read-data (subpath "/private/var/folders"))');
+    expect(profile).toContain('(subpath "/Users/example/worktree")');
+    expect(profile).toContain("(allow network*)");
   });
 
 
@@ -93,6 +107,66 @@ describe("macOS sandbox profile", () => {
 
       expect(await readFile(join(allowed, "ok.txt"), "utf8")).toBe("ok\n");
       await expect(readFile(join(denied, "no.txt"), "utf8")).rejects.toBeTruthy();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!sandboxAvailable())("denies reads outside the workspace and writes inside it in read mode", async () => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "cob-sandbox-read-")));
+    try {
+      const taskDir = join(dir, "task");
+      const workspace = join(dir, "workspace");
+      const denied = join(dir, "denied");
+      await mkdir(taskDir);
+      await mkdir(workspace);
+      await mkdir(denied);
+      await writeFile(join(workspace, "allowed.txt"), "allowed\n", "utf8");
+      await writeFile(join(denied, "secret.txt"), "secret\n", "utf8");
+
+      const profile = await writeSeatbeltProfile({
+        mode: "read",
+        taskDir,
+        tempDir: join(taskDir, "tmp"),
+        worktreePath: workspace,
+      });
+
+      const allowed = await execFileAsync("/usr/bin/sandbox-exec", [
+        "-f",
+        profile,
+        "/bin/cat",
+        join(workspace, "allowed.txt"),
+      ]);
+      expect(allowed.stdout).toBe("allowed\n");
+
+      await expect(
+        execFileAsync("/usr/bin/sandbox-exec", [
+          "-f",
+          profile,
+          "/bin/cat",
+          join(denied, "secret.txt"),
+        ]),
+      ).rejects.toBeTruthy();
+
+      await expect(
+        execFileAsync("/usr/bin/sandbox-exec", [
+          "-f",
+          profile,
+          "/bin/sh",
+          "-c",
+          `echo no > '${workspace}/no.txt'`,
+        ]),
+      ).rejects.toBeTruthy();
+      await expect(readFile(join(workspace, "no.txt"), "utf8")).rejects.toBeTruthy();
+
+      await execFileAsync("/usr/bin/sandbox-exec", [
+        "-f",
+        profile,
+        "/bin/sh",
+        "-c",
+        `echo ok > '${taskDir}/ok.txt'`,
+      ]);
+      expect(await readFile(join(taskDir, "ok.txt"), "utf8")).toBe("ok\n");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

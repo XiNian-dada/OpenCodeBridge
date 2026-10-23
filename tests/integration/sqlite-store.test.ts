@@ -32,6 +32,8 @@ function task(): TaskRecord {
     worktree_path: "/tmp/worktree",
     worktree_git_dir: "/tmp/repo/.git/worktrees/task_store_test",
     base_commit: "a".repeat(40),
+    context_path: null,
+    context_files: [],
     created_at: now,
     started_at: now,
     ended_at: now,

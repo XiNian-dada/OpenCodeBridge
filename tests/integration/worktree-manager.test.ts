@@ -36,6 +36,8 @@ function task(repoRoot: string, baseCommit: string | null, id = "task_worktree_t
     worktree_path: null,
     worktree_git_dir: null,
     base_commit: baseCommit,
+    context_path: null,
+    context_files: [],
     created_at: new Date().toISOString(),
     started_at: null,
     ended_at: null,

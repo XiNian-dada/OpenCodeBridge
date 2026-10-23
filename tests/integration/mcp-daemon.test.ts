@@ -73,6 +73,17 @@ describe("MCP server over daemon", () => {
       expect(capabilities.structuredContent).toMatchObject({
         ok: true, capabilities: { adapter: "mock", simulated: true },
       });
+      const preflight = await mcp.client.callTool({
+        name: "agent_preflight",
+        arguments: { repo_root: repo, read_only: true },
+      });
+      expect(preflight.structuredContent).toMatchObject({
+        ok: true,
+        preflight: {
+          workspace: { kind: "repo_root", repo_root: repo },
+          permissions: { edit: false, shell: false },
+        },
+      });
       const spawned = await mcp.client.callTool({
         name: "agent_spawn",
         arguments: {
@@ -105,6 +116,15 @@ describe("MCP server over daemon", () => {
         .structuredContent as Record<string, unknown>;
       const events = historyJson.events as Array<Record<string, unknown>>;
       expect(events.map((event) => event.event_type)).toContain("task.completed");
+
+      const delivery = await mcp.client.callTool({
+        name: "agent_delivery",
+        arguments: { task_id: taskId },
+      });
+      expect(delivery.structuredContent).toMatchObject({
+        ok: true,
+        delivery: { status: "completed", verification: { status: "simulated" } },
+      });
     } finally {
       if (mcp !== null) await mcp.close();
       if (daemon !== null) {

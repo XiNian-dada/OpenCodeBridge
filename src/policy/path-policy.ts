@@ -87,6 +87,17 @@ export class PathPolicy {
     });
   }
 
+  async inspectGit(directory: string): Promise<{
+    top_level: string | null;
+    head: string | null;
+  }> {
+    const topLevel = await this.gitTopLevel(directory);
+    return {
+      top_level: topLevel,
+      head: topLevel === null ? null : await this.gitHead(topLevel),
+    };
+  }
+
   private normalize(input: string): string {
     const resolved = resolve(input);
     return process.platform === "darwin" || process.platform === "win32"

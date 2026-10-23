@@ -112,6 +112,15 @@ export class IpcServer {
       case "capabilities":
         parseParams(IpcParams.capabilities, params);
         return this.options.service.capabilities();
+      case "preflight": {
+        const parsed = parseParams(IpcParams.preflight, params);
+        return this.options.service.preflight({
+          repo_root: parsed.repo_root,
+          read_only: parsed.read_only,
+          ...(parsed.model === undefined ? {} : { model: parsed.model }),
+          ...(parsed.context_files === undefined ? {} : { context_files: parsed.context_files }),
+        });
+      }
       case "wait":
         return this.options.service.wait(parseParams(IpcParams.wait, params), signal);
       case "spawn":
@@ -129,7 +138,11 @@ export class IpcServer {
       }
       case "message": {
         const parsed = parseParams(IpcParams.message, params);
-        return this.options.service.message(parsed.task_id, parsed.message);
+        return this.options.service.message(
+          parsed.task_id,
+          parsed.message,
+          parsed.context_files ?? [],
+        );
       }
       case "abort":
         return this.options.service.abort(parseParams(IpcParams.abort, params).task_id);
@@ -140,6 +153,13 @@ export class IpcServer {
           ...(parsed.max_chars === undefined ? {} : { maxChars: parsed.max_chars }),
         });
       }
+      case "delivery": {
+        const parsed = parseParams(IpcParams.delivery, params);
+        return this.options.service.delivery({
+          task_id: parsed.task_id,
+          ...(parsed.max_chars === undefined ? {} : { max_chars: parsed.max_chars }),
+        });
+      }
       case "list":
         return this.options.service.list(parseParams(IpcParams.list, params));
       case "cleanup":
@@ -148,6 +168,9 @@ export class IpcServer {
         return this.options.service.approveCleanup(
           parseParams(IpcParams.approve_cleanup, params).approval_id,
         );
+      case "resume_provider":
+        parseParams(IpcParams.resume_provider, params);
+        return this.options.service.resumeProvider();
       case "shutdown":
         if (this.options.onShutdown !== undefined) {
           setImmediate(() => {

@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeConfig } from "../config.js";
 import { BridgeError, isBridgeError } from "../errors.js";
@@ -52,6 +54,37 @@ const WRITABLE_PERMISSIONS = [
   { action: "read", resource: "*.env", effect: "deny" },
   { action: "read", resource: "*.env.*", effect: "deny" },
 ] as const;
+
+function protectedOpenCodePaths(): string[] {
+  const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share");
+  const stateHome = process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
+  const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+  const configHome = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+  return [
+    join(dataHome, "opencode"),
+    join(stateHome, "opencode"),
+    join(cacheHome, "opencode"),
+    join(configHome, "opencode"),
+  ];
+}
+
+function permissionsFor(readOnly: boolean): Array<{
+  action: string;
+  resource: string;
+  effect: "allow" | "deny";
+}> {
+  const base = readOnly ? READ_ONLY_PERMISSIONS : WRITABLE_PERMISSIONS;
+  const protectedRules = protectedOpenCodePaths().flatMap((path) =>
+    [path, `${path}/*`, `${path}/**`].flatMap((resource) =>
+      ["read", "glob", "grep"].map((action) => ({
+        action,
+        resource,
+        effect: "deny" as const,
+      })),
+    ),
+  );
+  return [...base, ...protectedRules];
+}
 
 type CompletionReason = "idle" | "error" | "aborted";
 
@@ -107,11 +140,14 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode";
   readonly supportsWrites = sandboxAvailable();
+  readonly supportsReadIsolation: boolean;
   readonly requiresIsolatedWorktree = true;
   private readonly active = new Map<string, ActiveRun>();
   private readonly serverStarter: (options: ManagedOpenCodeServerOptions) => Promise<ManagedOpenCodeServer>;
 
   constructor(private readonly options: OpenCodeAdapterOptions) {
+    this.supportsReadIsolation =
+      options.config.security.read_sandbox !== "off" && sandboxAvailable();
     this.serverStarter = options.serverStarter ?? startManagedOpenCodeServer;
   }
 
@@ -144,12 +180,25 @@ export class OpenCodeAdapter implements AgentAdapter {
       "You are executing a delegated task under bridge-enforced constraints.",
       `Task ID: ${task.id}`,
       `Task type: ${task.task_type}`,
-      `Workspace: ${task.worktree_path ?? task.repo_root}`,
+      `Workspace: ${task.context_path ?? task.worktree_path ?? task.repo_root}`,
       task.read_only
         ? "Mode: READ-ONLY. Do not modify files. Do not run commands that modify files."
         : "Mode: WRITABLE (edit-only). Modify files only inside this workspace; never run shell commands.",
       "Do not access paths outside the workspace, use network tools, launch subagents, or change configuration.",
       "If the task cannot be completed within these constraints, report the blocker instead of expanding scope.",
+      "For review or analysis findings, report every issue with:",
+      "Location: path:line",
+      "Trigger: the exact condition that exposes the problem",
+      "Evidence: the observed code, output, or reproduction",
+      "Confidence: reproduced | static-inference | needs-confirmation",
+      "Only use 'reproduced' for something you actually observed. Shell is unavailable; if tests were not run, say 'not run' instead of claiming they passed.",
+      ...(task.task_type === "review" || task.task_type === "analysis"
+        ? [
+            "End the reply with a fenced ```json block in this exact shape:",
+            '{"findings":[{"location":"path:line","trigger":"...","evidence":"...","confidence":"reproduced|static-inference|needs-confirmation"}]}',
+            "Use an empty findings array when there are no findings. Do not put prose after the JSON block.",
+          ]
+        : []),
       "",
       "TASK:",
       task.task,
@@ -165,6 +214,17 @@ export class OpenCodeAdapter implements AgentAdapter {
       throw new BridgeError(
         "SANDBOX_UNAVAILABLE",
         "Writable OpenCode tasks require an available OS sandbox",
+        { details: { task_id: task.id, platform: process.platform } },
+      );
+    }
+    if (
+      task.read_only &&
+      this.options.config.security.read_sandbox === "require" &&
+      !this.supportsReadIsolation
+    ) {
+      throw new BridgeError(
+        "SANDBOX_UNAVAILABLE",
+        "Read-only OpenCode tasks require an OS read sandbox on this host",
         { details: { task_id: task.id, platform: process.platform } },
       );
     }
@@ -184,29 +244,32 @@ export class OpenCodeAdapter implements AgentAdapter {
     }
 
     const dataDir = resolveDataDir(this.options.config);
-    const permissions = task.read_only ? READ_ONLY_PERMISSIONS : WRITABLE_PERMISSIONS;
+    const permissions = permissionsFor(task.read_only);
+    const workspace = task.context_path ?? task.worktree_path ?? task.repo_root;
+    const sandbox = task.read_only
+      ? this.supportsReadIsolation
+        ? { mode: "read" as const, worktreePath: workspace }
+        : undefined
+      : {
+          mode: "write" as const,
+          worktreePath: task.worktree_path as string,
+          gitDir: task.worktree_git_dir as string,
+        };
     let server: ManagedOpenCodeServer | null = null;
     let run: ActiveRun | null = null;
 
     try {
       server = await this.serverStarter({
         binary: this.options.config.opencode.binary,
-        cwd: task.worktree_path ?? task.repo_root,
+        cwd: workspace,
         dataDir,
         taskId: task.opencode_task_id,
-        configContent: { permissions: [...permissions], snapshots: false },
+        configContent: { permissions, snapshots: false },
         compatibility: this.options.config.opencode.compatibility,
         startupTimeoutMs: this.options.config.opencode.startup_timeout_ms,
         logger: this.options.logger,
         signal: context.signal,
-        ...(task.read_only || task.worktree_path === null
-          ? {}
-          : {
-              sandbox: {
-                worktreePath: task.worktree_path,
-                gitDir: task.worktree_git_dir ?? undefined,
-              },
-            }),
+        ...(sandbox === undefined ? {} : { sandbox }),
       });
 
       context.emit({
@@ -588,7 +651,7 @@ function failureFromMessage(message: string): BridgeError {
     return new BridgeError("REGION_RESTRICTED", message, { details: { upstream: message } });
   }
   if (/balance|quota|billing|insufficient|credit/i.test(message)) {
-    return new BridgeError("BUDGET_EXCEEDED", message, { details: { upstream: message } });
+    return new BridgeError("PROVIDER_QUOTA_EXCEEDED", message, { details: { upstream: message } });
   }
   if (/auth|api key|unauthorized|forbidden/i.test(message)) {
     return new BridgeError("PROVIDER_AUTH_FAILED", message, { details: { upstream: message } });

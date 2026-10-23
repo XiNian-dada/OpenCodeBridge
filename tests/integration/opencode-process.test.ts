@@ -89,6 +89,29 @@ describe("managed OpenCode process", () => {
     }
   });
 
+  it.skipIf(!sandboxAvailable())("starts under the macOS read-isolation sandbox", async () => {
+    const { dir, binary } = await makeFakeBinary();
+    let managed;
+    try {
+      managed = await startManagedOpenCodeServer({
+        binary,
+        cwd: dir,
+        dataDir: join(dir, "data"),
+        taskId: "task_read_sandbox_test",
+        configContent: {},
+        compatibility: "2.1.x",
+        startupTimeoutMs: 5000,
+        logger: createLogger("silent"),
+        sandbox: { mode: "read", worktreePath: dir },
+      });
+      expect(managed.sandboxed).toBe(true);
+      expect((await managed.client.info()).version).toBe("2.1.2");
+    } finally {
+      if (managed !== undefined) await managed.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an incompatible OpenCode version and cleans up", async () => {
     const { dir, binary } = await makeFakeBinary();
     try {

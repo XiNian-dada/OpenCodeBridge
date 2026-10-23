@@ -9,6 +9,32 @@ import { makeTempDir } from "../helpers/fixtures.js";
 const live = process.env.OPENCODE_LIVE === "1";
 
 describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
+  it("starts a read-only private server under the read-isolation sandbox", async () => {
+    const dir = await realpath(await makeTempDir());
+    let managed;
+    try {
+      managed = await startManagedOpenCodeServer({
+        binary: process.env.OPENCODE_BIN ?? "/opt/homebrew/bin/opencode",
+        cwd: dir,
+        dataDir: join(dir, "data"),
+        taskId: "task_live_read_smoke",
+        configContent: { permissions: [...READ_ONLY_PERMISSIONS], snapshots: false },
+        compatibility: "2.1.x",
+        startupTimeoutMs: 15000,
+        logger: createLogger("silent"),
+        sandbox: { mode: "read", worktreePath: dir },
+      });
+
+      expect(managed.info.version).toMatch(/^2\.1\./);
+      expect(managed.sandboxed).toBe(true);
+      const models = await managed.client.models();
+      expect(models.length).toBeGreaterThan(0);
+    } finally {
+      if (managed !== undefined) await managed.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("starts a private server, creates a session, and admits a no-reply prompt", async () => {
     const dir = await realpath(await makeTempDir());
     let managed;

@@ -72,4 +72,22 @@ describe("EventStore", () => {
     expect(event.payload._truncated).toBe(true);
     expect(typeof event.payload.preview).toBe("string");
   });
+
+  it("keeps conversation messages up to the message payload limit", () => {
+    const store = new EventStore({
+      redactor: new Redactor({ maxStringChars: 40 }),
+      messageRedactor: new Redactor({ maxStringChars: 1000 }),
+      maxPayloadChars: 50,
+    });
+    const text = "y".repeat(300);
+    const event = store.append(
+      "task_a",
+      null,
+      "opencode",
+      "opencode.message",
+      { role: "assistant", text },
+      { maxPayloadChars: 2000 },
+    );
+    expect(event.payload).toEqual({ role: "assistant", text });
+  });
 });

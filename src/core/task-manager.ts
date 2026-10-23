@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { BridgeConfig } from "../config.js";
 import type { DiffManager } from "../git/diff-manager.js";
 import type { TaskDiffResult, TaskHistoryResult } from "./task-service.js";
@@ -16,10 +16,17 @@ import type {
   AbortTaskResult,
   ApprovalRecord,
   BridgeEvent,
+  BridgeCapabilities,
   CleanupAction,
   CleanupOptions,
   CleanupResult,
+  ContextFile,
+  DeliveryCommand,
+  DeliveryOptions,
+  DeliveryPackage,
   HistoryQuery,
+  PreflightInput,
+  PreflightResult,
   SpawnResult,
   SpawnTaskInput,
   TaskHistorySummary,
@@ -29,7 +36,6 @@ import type {
   TaskStatus,
   TaskUsage,
   TaskView,
-  BridgeCapabilities,
   WaitTasksInput,
   WaitTasksResult,
 } from "../types.js";
@@ -44,6 +50,12 @@ import type {
 import { EventStore } from "./event-store.js";
 import { assertTransition, isTerminal } from "./task-state.js";
 import { TaskQueue } from "./task-queue.js";
+import {
+  inspectContextFiles,
+  normalizeContextPaths,
+  writeContextSnapshot,
+} from "./context-snapshot.js";
+import { parseReviewFindings } from "./findings.js";
 
 interface RunHandle {
   controller: AbortController;
@@ -76,6 +88,7 @@ export class TaskManager {
   private readonly store: SqliteStore | undefined;
   private readonly approvals = new Map<string, ApprovalRecord>();
   private shuttingDown = false;
+  private providerPause: { code: string; message: string; at: string } | null = null;
 
   constructor(private readonly options: TaskManagerOptions) {
     this.queue = new TaskQueue(options.config.scheduler.max_queue);
@@ -110,23 +123,334 @@ export class TaskManager {
         max_cost_usd: config.models.max_cost_usd,
         enforcement: "soft",
       },
+      provider_paused: this.providerPause === null ? null : { ...this.providerPause },
       execution: {
         mcp_read_only_default: true,
         writable_supported: adapter.supportsWrites,
         isolated_worktree_required: adapter.requiresIsolatedWorktree,
         shell_allowed: false,
-        read_isolation: simulated ? "simulated" : "opencode_permissions_only",
+        read_isolation: simulated
+          ? "simulated"
+          : adapter.supportsReadIsolation === true
+            ? "macos_seatbelt"
+            : "opencode_permissions_only",
         write_isolation: simulated ? "simulated" : adapter.supportsWrites ? "macos_seatbelt" : "unavailable",
+        network: simulated ? "simulated" : "provider_required",
+        credential_isolation: simulated ? "simulated" : "partial",
       },
       limitations: simulated
         ? ["Mock results and tool events are simulated; no real model or code execution."]
         : [
             "Model IDs are configured policy entries, not a live provider availability or quota check.",
-            "Read access is not confined by an OS sandbox; per-file delegation scope is not enforced.",
+            ...(adapter.supportsReadIsolation === true
+              ? [
+                  "Read-only tasks use a macOS Seatbelt denylist: the user home, external mounts, and system temp are hidden, but the OpenCode process still needs its provider auth/config directories to call the model. Tool access to those directories is denied.",
+                ]
+              : [
+                  "Read access is not confined by an OS sandbox; per-file delegation scope is not enforced.",
+                ]),
+            "Model calls require network access; worker web, shell, subagent, and external-directory tools are denied.",
             "Writable tasks are edit-only; Codex must run tests and review and integrate the diff.",
             "Internal OpenCode model calls are not independently verified by this capability query.",
             "Budgets are soft; unknown provider cost cannot be enforced as a hard spending cap.",
           ],
+    };
+  }
+
+  async preflight(input: PreflightInput): Promise<PreflightResult> {
+    this.assertProviderReady();
+    const { config, adapter, modelPolicy, pathPolicy } = this.options;
+    const simulated = adapter.name === "mock";
+    const model = modelPolicy.resolve(input.model);
+    const contextFiles = normalizeContextPaths(input.context_files ?? []);
+    if (!input.read_only && contextFiles.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "context_files is only supported for read-only tasks",
+      );
+    }
+
+    if (!input.read_only && !adapter.supportsWrites) {
+      throw new BridgeError(
+        "SANDBOX_UNAVAILABLE",
+        "This adapter does not support writable tasks; use read_only=true or the mock adapter",
+        { details: { adapter: adapter.name } },
+      );
+    }
+    if (
+      input.read_only &&
+      config.security.read_sandbox === "require" &&
+      adapter.supportsReadIsolation !== true
+    ) {
+      throw new BridgeError(
+        "SANDBOX_UNAVAILABLE",
+        "Read-only tasks require an OS read sandbox on this host",
+        { details: { adapter: adapter.name, platform: process.platform } },
+      );
+    }
+
+    const repo = await pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
+    const contextEntries =
+      contextFiles.length === 0
+        ? []
+        : await inspectContextFiles(repo.repo_root, contextFiles);
+    let gitTopLevel = repo.git_top_level;
+    let baseCommit = repo.base_commit;
+    if (input.read_only) {
+      const git = await pathPolicy.inspectGit(repo.repo_root);
+      gitTopLevel = git.top_level;
+      baseCommit = git.head;
+    }
+
+    const worktreeRequired = !input.read_only && adapter.requiresIsolatedWorktree;
+    const contextEnabled = contextFiles.length > 0;
+    if (worktreeRequired && baseCommit === null) {
+      throw new BridgeError(
+        "WORKTREE_CREATE_FAILED",
+        `Repository has no HEAD commit: ${repo.repo_root}`,
+        { details: { repo_root: repo.repo_root } },
+      );
+    }
+
+    let mainWorktreeDirty: boolean | null = null;
+    let mainWorktreeChanges: string[] = [];
+    if (gitTopLevel !== null && this.options.worktrees !== undefined) {
+      try {
+        const status = await this.options.worktrees.dirtyStatus(repo.repo_root);
+        mainWorktreeDirty = status.dirty;
+        mainWorktreeChanges = status.files;
+      } catch {
+        // A missing Git worktree is not fatal for a read-only preflight.
+      }
+    }
+
+    const capabilities = this.capabilities();
+    const warnings: string[] = [];
+    if (simulated) {
+      warnings.push("Mock adapter: results and tool events are simulated.");
+    }
+    if (
+      !simulated &&
+      config.security.read_sandbox === "auto" &&
+      adapter.supportsReadIsolation !== true
+    ) {
+      warnings.push(
+        "Read-only tasks will not get OS read isolation on this host; only OpenCode permissions apply.",
+      );
+    }
+    if (worktreeRequired && mainWorktreeDirty === true) {
+      warnings.push(
+        "The main worktree has uncommitted changes. They are reported, not copied into the isolated worktree.",
+      );
+    }
+    if (worktreeRequired) {
+      warnings.push(
+        "The isolated worktree is created at task start and will use the new task ID.",
+      );
+    }
+    if (contextEnabled) {
+      warnings.push(
+        "Only the listed context files are copied into the task workspace; dependencies are not resolved automatically.",
+      );
+    }
+
+    const unverified = [
+      "Provider model availability and quota are checked only when the task starts.",
+      "Per-file delegation scope is not enforced; the worker can read anywhere its OS sandbox and tool permissions allow.",
+      "The bridge does not run tests or independently verify worker claims.",
+      "Cost enforcement requires provider-reported cost.",
+      ...capabilities.limitations,
+      ...(worktreeRequired
+        ? ["Worktree creation and the recorded base commit are verified at task start."]
+        : []),
+      ...(contextEnabled
+        ? ["Context files are hashed now and copied at task start; the snapshot is not yet created."]
+        : []),
+    ];
+
+    return {
+      adapter: adapter.name,
+      simulated,
+      requested: {
+        repo_root: input.repo_root,
+        model: input.model ?? null,
+        read_only: input.read_only,
+      },
+      workspace: {
+        kind: contextEnabled
+          ? "context_snapshot"
+          : worktreeRequired
+            ? "isolated_worktree"
+            : "repo_root",
+        repo_root: repo.repo_root,
+        git_top_level: gitTopLevel,
+        base_commit: baseCommit,
+        path: contextEnabled || worktreeRequired ? null : repo.repo_root,
+        planned_worktree_root: worktreeRequired
+          ? join(resolveDataDir(config), "worktrees")
+          : null,
+        planned_context_root: contextEnabled
+          ? join(resolveDataDir(config), "tasks", "<task-id>", "workspace")
+          : null,
+        worktree_required: worktreeRequired,
+        worktree_ready: !worktreeRequired,
+        main_worktree_dirty: mainWorktreeDirty,
+        main_worktree_changes: mainWorktreeChanges,
+      },
+      model: {
+        model: model.model,
+        provider_id: model.provider_id,
+        model_id: model.model_id,
+        variant: model.variant,
+        permitted: true,
+        expensive: model.expensive,
+        availability: "unverified_until_start",
+      },
+      permissions: {
+        read: true,
+        glob: true,
+        grep: true,
+        edit: !input.read_only,
+        write: !input.read_only,
+        patch: !input.read_only,
+        shell: false,
+        external_directories: false,
+        web: false,
+        subagent: false,
+        question: false,
+      },
+      isolation: capabilities.execution,
+      budgets: {
+        max_tokens: config.models.max_tokens,
+        max_cost_usd: config.models.max_cost_usd,
+        enforcement: "soft",
+        hard_limits: ["queue_size", "concurrency", "task_timeout"],
+        soft_limits: ["tokens", "cost"],
+      },
+      timeout_seconds: {
+        default: config.scheduler.default_timeout_seconds,
+        max: config.scheduler.max_timeout_seconds,
+      },
+      context: {
+        enabled: contextEnabled,
+        planned_root: contextEnabled
+          ? join(resolveDataDir(config), "tasks", "<task-id>", "workspace")
+          : null,
+        files: contextEntries,
+        total_bytes: contextEntries.reduce((sum, file) => sum + file.bytes, 0),
+        note: contextEnabled
+          ? "Only the listed files are copied; missing dependencies are not resolved automatically."
+          : "No context snapshot requested; the task workspace is the repository root.",
+      },
+      unverified: [...new Set(unverified)],
+      warnings,
+    };
+  }
+
+  async delivery(options: DeliveryOptions): Promise<DeliveryPackage> {
+    const task = this.requireTask(options.task_id);
+    const events = this.options.eventStore.list(task.id, { limit: 10_000 }).events;
+    const resolved = events
+      .filter((event) => event.event_type === "opencode.model.resolved")
+      .at(-1);
+    const resolvedPayload = resolved?.payload ?? {};
+    const actualProvider =
+      typeof resolvedPayload.provider_id === "string"
+        ? resolvedPayload.provider_id
+        : null;
+    const actualModelId =
+      typeof resolvedPayload.model_id === "string"
+        ? resolvedPayload.model_id
+        : null;
+    const advertised =
+      typeof resolvedPayload.advertised_id === "string"
+        ? resolvedPayload.advertised_id
+        : actualProvider !== null && actualModelId !== null
+          ? `${actualProvider}/${actualModelId}`
+          : null;
+
+    const diff = await this.diff(task.id, {
+      ...(options.max_chars === undefined ? {} : { maxChars: options.max_chars }),
+    });
+    const simulated = this.options.adapter.name === "mock";
+    const patch = diff.available ? diff.patch : "";
+    const patchHash =
+      patch === "" ? null : createHash("sha256").update(patch).digest("hex");
+
+    const commands = extractDeliveryCommands(events, simulated);
+    const context = await readContextManifest(task);
+    const findings = parseReviewFindings(finalAssistantText(events));
+    const verificationStatus = simulated
+      ? "simulated"
+      : task.status === "completed"
+        ? "unverified"
+        : "failed";
+    const notes = [
+      "The bridge did not execute tests or commands.",
+      "Commands below are observed or worker-reported and are not independently verified.",
+      "The patch was not applied by the bridge.",
+      ...(simulated ? ["Mock adapter output is simulated."] : []),
+    ];
+
+    return {
+      task_id: task.id,
+      status: task.status,
+      generated_at: this.now().toISOString(),
+      task: {
+        task_type: task.task_type,
+        repo_root: task.repo_root,
+        read_only: task.read_only,
+        root_task_id: task.root_task_id,
+        turn: task.turn,
+        session_id: task.session_id,
+      },
+      context,
+      model: {
+        requested: task.model,
+        actual: advertised,
+        provider_id: actualProvider ?? task.provider_id,
+        model_id: actualModelId ?? task.model_id,
+        variant: task.model_variant,
+        verified: resolved !== undefined,
+        simulated,
+      },
+      git: {
+        available: diff.available,
+        ...(diff.available ? {} : { reason: diff.reason ?? "no_worktree" }),
+        base_commit: task.base_commit,
+        worktree_path: task.worktree_path,
+        status: diff.available ? diff.git_status : "",
+        files: diff.files,
+        added: diff.added,
+        modified: diff.modified,
+        deleted: diff.deleted,
+        untracked: diff.untracked,
+        additions: diff.additions,
+        deletions: diff.deletions,
+        patch,
+        patch_truncated: diff.available ? diff.patch_truncated : false,
+        patch_sha256: patchHash,
+      },
+      commands,
+      verification: {
+        status: verificationStatus,
+        bridge_ran_commands: false,
+        tests_run_by_bridge: false,
+        notes,
+      },
+      findings,
+      usage: { ...task.usage },
+      cost: {
+        usd: task.usage.cost_usd,
+        known: task.usage.cost_known,
+      },
+      unverified: [
+        "Tests and command results were not executed by the bridge.",
+        "Provider model availability and quota were not re-checked.",
+        "Patch application and downstream integration were not verified.",
+        "Per-file delegation scope was not enforced.",
+        ...(task.usage.cost_known ? [] : ["Provider cost was not reported."]),
+      ],
     };
   }
 
@@ -158,6 +482,7 @@ export class TaskManager {
   }
 
   async spawn(input: SpawnTaskInput): Promise<SpawnResult> {
+    this.assertProviderReady();
     const taskText = input.task.trim();
     if (taskText.length === 0) {
       throw new BridgeError("INVALID_ARGUMENT", "task must not be empty");
@@ -180,7 +505,18 @@ export class TaskManager {
     }
 
     const idempotencyKey = input.idempotency_key?.trim() || null;
-    const fingerprint = this.fingerprint({ ...input, task: taskText });
+    const contextFiles = normalizeContextPaths(input.context_files ?? []);
+    if (!input.read_only && contextFiles.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "context_files is only supported for read-only tasks; writable tasks use an isolated worktree",
+      );
+    }
+    const fingerprint = this.fingerprint({
+      ...input,
+      task: taskText,
+      context_files: contextFiles,
+    });
     if (idempotencyKey !== null) {
       const existingId = this.idempotency.get(idempotencyKey);
       if (existingId !== undefined) {
@@ -205,6 +541,12 @@ export class TaskManager {
       );
     }
     const repo = await this.options.pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
+    if (contextFiles.length > 0) {
+      await inspectContextFiles(repo.repo_root, contextFiles);
+    }
+    const baseCommit = input.read_only
+      ? (await this.options.pathPolicy.inspectGit(repo.repo_root)).head
+      : repo.base_commit;
 
     if (this.queue.size >= this.options.config.scheduler.max_queue) {
       throw new BridgeError("QUEUE_FULL", "The task queue is full", {
@@ -237,7 +579,9 @@ export class TaskManager {
       server_pid: null,
       worktree_path: null,
       worktree_git_dir: null,
-      base_commit: repo.base_commit,
+      base_commit: baseCommit,
+      context_path: null,
+      context_files: contextFiles,
       created_at: createdAt,
       started_at: null,
       ended_at: null,
@@ -266,6 +610,7 @@ export class TaskManager {
         read_only: task.read_only,
         timeout_seconds: task.timeout_seconds,
         idempotency_key: idempotencyKey,
+        context_files: contextFiles,
       },
       { maxPayloadChars: this.options.config.history.max_delegation_chars },
     );
@@ -292,7 +637,12 @@ export class TaskManager {
     return { task: this.toView(task), deduplicated: false };
   }
 
-  async message(taskId: string, message: string): Promise<SpawnResult> {
+  async message(
+    taskId: string,
+    message: string,
+    contextFiles: string[] = [],
+  ): Promise<SpawnResult> {
+    this.assertProviderReady();
     const text = message.trim();
     if (text.length === 0) {
       throw new BridgeError("INVALID_ARGUMENT", "message must not be empty");
@@ -302,6 +652,13 @@ export class TaskManager {
     }
 
     const parent = this.requireTask(taskId);
+    const additions = normalizeContextPaths(contextFiles);
+    if (!parent.read_only && additions.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "context_files is only supported for read-only tasks",
+      );
+    }
     if (!isTerminal(parent.status)) {
       throw new BridgeError("TASK_BUSY", "Task is still running; wait or abort it before sending a message", {
         details: { task_id: parent.id, status: parent.status },
@@ -325,6 +682,10 @@ export class TaskManager {
 
     const resolvedModel = this.options.modelPolicy.resolve(parent.model);
     const repo = await this.options.pathPolicy.resolveRepoRoot(parent.repo_root, parent.read_only);
+    const combinedContext = [...new Set([...parent.context_files, ...additions])];
+    if (additions.length > 0) {
+      await inspectContextFiles(repo.repo_root, combinedContext);
+    }
     const createdAt = this.now().toISOString();
     const childId = this.idFactory();
     const child: TaskRecord = {
@@ -351,6 +712,8 @@ export class TaskManager {
       worktree_path: parent.worktree_path,
       worktree_git_dir: parent.worktree_git_dir,
       base_commit: parent.base_commit,
+      context_path: additions.length > 0 ? null : parent.context_path,
+      context_files: combinedContext,
       created_at: createdAt,
       started_at: null,
       ended_at: null,
@@ -374,6 +737,7 @@ export class TaskManager {
         turn: child.turn,
         session_id: parent.session_id,
         message: text,
+        context_files: additions,
       },
       { maxPayloadChars: this.options.config.history.max_delegation_chars },
     );
@@ -763,7 +1127,11 @@ export class TaskManager {
   }
 
   private pump(): void {
-    while (!this.shuttingDown && this.running.size < this.options.config.scheduler.max_concurrent) {
+    while (
+      !this.shuttingDown &&
+      this.providerPause === null &&
+      this.running.size < this.options.config.scheduler.max_concurrent
+    ) {
       const taskId = this.queue.dequeue();
       if (taskId === undefined) return;
       const task = this.tasks.get(taskId);
@@ -847,6 +1215,64 @@ export class TaskManager {
   }
 
   private async prepareWorkspace(task: TaskRecord): Promise<void> {
+    if (task.read_only && task.context_files.length > 0) {
+      if (task.context_path !== null) {
+        try {
+          await stat(task.context_path);
+        } catch (error) {
+          throw new BridgeError(
+            "CONTEXT_SNAPSHOT_FAILED",
+            "Task context snapshot no longer exists",
+            {
+              cause: error,
+              details: { task_id: task.id, context_path: task.context_path },
+            },
+          );
+        }
+        return;
+      }
+
+      const dataDir = resolveDataDir(this.options.config);
+      const contextTaskDir = join(dataDir, "tasks", task.id);
+      const destination = join(contextTaskDir, "workspace");
+      task.stage = "preparing_context";
+      this.append(task, "bridge", "context.snapshot.creating", {
+        repo_root: task.repo_root,
+        files: task.context_files,
+      });
+
+      const snapshot = await writeContextSnapshot({
+        repoRoot: task.repo_root,
+        files: task.context_files,
+        destination,
+      });
+      const manifestPath = join(contextTaskDir, "context-manifest.json");
+      await writeFile(
+        manifestPath,
+        JSON.stringify(
+          {
+            created_at: this.now().toISOString(),
+            repo_root: task.repo_root,
+            workspace: destination,
+            files: snapshot.files,
+            total_bytes: snapshot.total_bytes,
+          },
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      );
+      task.context_path = destination;
+      this.store?.saveTask(task);
+      this.append(task, "bridge", "context.snapshot.created", {
+        workspace: destination,
+        manifest_path: manifestPath,
+        files: snapshot.files,
+        total_bytes: snapshot.total_bytes,
+      });
+      return;
+    }
+
     if (task.read_only || !this.options.adapter.requiresIsolatedWorktree) return;
     if (task.worktree_path !== null) {
       try {
@@ -946,6 +1372,13 @@ export class TaskManager {
 
   private finishRunWithError(task: TaskRecord, handle: RunHandle, error: unknown): void {
     const payload = toErrorPayload(error);
+    if (
+      payload.code === "PROVIDER_AUTH_FAILED" ||
+      payload.code === "PROVIDER_QUOTA_EXCEEDED" ||
+      payload.code === "REGION_RESTRICTED"
+    ) {
+      this.pauseProvider(payload.code, payload.message);
+    }
 
     if (handle.stopReason === "budget") {
       this.finalize(task, "failed", {
@@ -1107,7 +1540,17 @@ export class TaskManager {
   }
 
   private handleAdapterEvent(task: TaskRecord, event: AdapterEventInput): void {
-    this.append(task, event.source, event.event_type, event.payload);
+    // Assistant replies are conversation content, not compact audit metadata.
+    // Keep them up to the delegation limit so the viewer can show the full answer.
+    this.append(
+      task,
+      event.source,
+      event.event_type,
+      event.payload,
+      event.event_type === "opencode.message"
+        ? { maxPayloadChars: this.options.config.history.max_delegation_chars }
+        : undefined,
+    );
 
     if (event.event_type === "usage.updated") {
       const usage = parseUsage(event.payload.usage);
@@ -1201,6 +1644,7 @@ export class TaskManager {
       timeout_seconds: task.timeout_seconds,
       session_id: task.session_id,
       worktree_path: task.worktree_path,
+      context_path: task.context_path,
       created_at: task.created_at,
       started_at: task.started_at,
       ended_at: task.ended_at,
@@ -1326,6 +1770,38 @@ export class TaskManager {
     });
   }
 
+  resumeProvider(): { resumed: boolean } {
+    const wasPaused = this.providerPause !== null;
+    this.providerPause = null;
+    if (wasPaused) {
+      this.options.logger.info("provider pause cleared by local CLI");
+      this.pump();
+    }
+    return { resumed: wasPaused };
+  }
+
+  private assertProviderReady(): void {
+    if (this.providerPause === null) return;
+    throw new BridgeError(
+      "PROVIDER_PAUSED",
+      `Delegation is paused after ${this.providerPause.code}: ${this.providerPause.message}`,
+      { details: { ...this.providerPause } },
+    );
+  }
+
+  private pauseProvider(code: string, message: string): void {
+    if (this.providerPause !== null) return;
+    this.providerPause = {
+      code,
+      message,
+      at: this.now().toISOString(),
+    };
+    this.options.logger.warn(
+      { code, message },
+      "provider/account error paused new delegations",
+    );
+  }
+
   private budgetExceeded(usage: TaskUsage): boolean {
     const maxTokens = this.options.config.models.max_tokens;
     if (maxTokens !== null && usage.total_tokens > maxTokens) return true;
@@ -1358,6 +1834,7 @@ export class TaskManager {
           model: input.model ?? this.options.config.models.default,
           read_only: input.read_only,
           timeout_seconds: input.timeout_seconds,
+          context_files: input.context_files ?? [],
         }),
       )
       .digest("hex");
@@ -1379,6 +1856,159 @@ function parseUsage(value: unknown): TaskUsage | null {
     cost_usd: usage.cost_usd ?? null,
     cost_known: usage.cost_known ?? usage.cost_usd !== null,
   };
+}
+
+function finalAssistantText(events: BridgeEvent[]): string | null {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event === undefined || event.event_type !== "opencode.message") continue;
+    const payload = asRecord(event.payload);
+    if (stringField(payload, "role") !== "assistant") continue;
+    const text = stringField(payload, "text");
+    if (text !== null && text.trim() !== "") return text;
+    const preview = stringField(payload, "preview");
+    if (preview !== null && preview.trim() !== "") {
+      try {
+        const parsed = JSON.parse(preview) as { text?: unknown };
+        if (typeof parsed.text === "string" && parsed.text.trim() !== "") return parsed.text;
+      } catch {
+        return preview;
+      }
+    }
+  }
+  return null;
+}
+
+async function readContextManifest(
+  task: TaskRecord,
+): Promise<DeliveryPackage["context"]> {
+  if (task.context_path === null) {
+    return {
+      path: null,
+      manifest_path: null,
+      files: [],
+      total_bytes: 0,
+      verified: false,
+    };
+  }
+  const manifestPath = join(dirname(task.context_path), "context-manifest.json");
+  try {
+    const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      files?: unknown;
+      total_bytes?: unknown;
+    };
+    const files = Array.isArray(parsed.files)
+      ? parsed.files.filter(
+          (file): file is ContextFile =>
+            typeof file === "object" &&
+            file !== null &&
+            typeof (file as ContextFile).path === "string" &&
+            typeof (file as ContextFile).sha256 === "string" &&
+            typeof (file as ContextFile).bytes === "number",
+        )
+      : [];
+    return {
+      path: task.context_path,
+      manifest_path: manifestPath,
+      files,
+      total_bytes:
+        typeof parsed.total_bytes === "number"
+          ? parsed.total_bytes
+          : files.reduce((sum, file) => sum + file.bytes, 0),
+      verified: files.length > 0,
+    };
+  } catch {
+    return {
+      path: task.context_path,
+      manifest_path: manifestPath,
+      files: [],
+      total_bytes: 0,
+      verified: false,
+    };
+  }
+}
+
+function extractDeliveryCommands(
+  events: BridgeEvent[],
+  simulated: boolean,
+): DeliveryCommand[] {
+  const commands = new Map<string, DeliveryCommand>();
+  for (const event of events) {
+    const payload = asRecord(event.payload);
+    const input = asRecord(payload.input);
+    const callId =
+      stringField(payload, "call_id") ??
+      stringField(payload, "callId") ??
+      stringField(payload, "id");
+    const key = `${event.task_id}:${callId ?? event.sequence}`;
+
+    if (event.event_type === "shell.started") {
+      commands.set(key, {
+        command: stringField(payload, "command") ?? stringField(input, "command"),
+        exit_code: null,
+        source: simulated ? "simulated" : "shell",
+        observed_at: event.timestamp,
+        verified_by_bridge: false,
+        note: "Reported by OpenCode; not executed by the bridge.",
+      });
+      continue;
+    }
+
+    if (event.event_type === "shell.ended") {
+      const exitCode =
+        numberField(payload, "exitCode") ??
+        numberField(payload, "exit_code") ??
+        numberField(payload, "code");
+      const existing = commands.get(key);
+      if (existing !== undefined) {
+        existing.exit_code = exitCode;
+      } else {
+        commands.set(key, {
+          command: null,
+          exit_code: exitCode,
+          source: simulated ? "simulated" : "shell",
+          observed_at: event.timestamp,
+          verified_by_bridge: false,
+          note: "Reported by OpenCode; not executed by the bridge.",
+        });
+      }
+      continue;
+    }
+
+    if (event.event_type !== "tool.called") continue;
+    const tool = stringField(payload, "tool");
+    const command = stringField(input, "command") ?? stringField(payload, "command");
+    if (tool !== "bash" && tool !== "shell" && command === null) continue;
+    commands.set(key, {
+      command,
+      exit_code: null,
+      source: simulated ? "simulated" : "tool",
+      observed_at: event.timestamp,
+      verified_by_bridge: false,
+      note:
+        stringField(payload, "note") ??
+        "Worker-reported tool command; not executed by the bridge.",
+    });
+  }
+  return [...commands.values()].sort((a, b) =>
+    a.observed_at.localeCompare(b.observed_at),
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function killProcessGroup(pid: number): void {

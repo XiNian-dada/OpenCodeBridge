@@ -26,7 +26,10 @@ describe("local live task viewer", () => {
       const shell = await fetch(origin);
       expect(shell.status).toBe(200);
       expect(shell.headers.get("content-security-policy")).toContain("connect-src 'self'");
-      expect(await shell.text()).toContain("对话与工具调用");
+      const shellHtml = await shell.text();
+      expect(shellHtml).toContain("Codex");
+      expect(shellHtml).toContain("OpenCode");
+      expect(shellHtml).toContain("全部审计事件");
       expect((await fetch(`${origin}/app.js`)).headers.get("content-type")).toContain("javascript");
       expect((await fetch(`${origin}/api/tasks`)).status).toBe(401);
       expect((await fetch(`${origin}/api/tasks`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);

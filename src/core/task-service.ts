@@ -15,6 +15,10 @@ import type {
   WaitTasksInput,
   WaitTasksResult,
   TaskViewerInfo,
+  PreflightInput,
+  PreflightResult,
+  DeliveryOptions,
+  DeliveryPackage,
 } from "../types.js";
 import type { TaskManager } from "./task-manager.js";
 
@@ -35,19 +39,22 @@ export interface ToolServices {
 export interface TaskService {
   viewer(): Promise<TaskViewerInfo>;
   capabilities(): Promise<BridgeCapabilities>;
+  preflight(input: PreflightInput): Promise<PreflightResult>;
   wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult>;
   spawn(input: SpawnTaskInput): Promise<SpawnResult>;
   status(taskId: string): Promise<TaskView>;
   history(taskId: string, query: HistoryQuery): Promise<TaskHistoryResult>;
-  message(taskId: string, message: string): Promise<SpawnResult>;
+  message(taskId: string, message: string, contextFiles?: string[]): Promise<SpawnResult>;
   abort(taskId: string): Promise<AbortTaskResult>;
   diff(
     taskId: string,
     options?: { file?: string; maxChars?: number },
   ): Promise<TaskDiffResult>;
+  delivery(options: DeliveryOptions): Promise<DeliveryPackage>;
   list(filter: TaskListFilter): Promise<TaskView[]>;
   cleanup(options: CleanupOptions): Promise<CleanupResult>;
   approveCleanup(approvalId: string): Promise<CleanupResult>;
+  resumeProvider(): Promise<{ resumed: boolean }>;
 }
 
 export class LocalTaskService implements TaskService {
@@ -76,6 +83,10 @@ export class LocalTaskService implements TaskService {
     return this.manager.capabilities();
   }
 
+  async preflight(input: PreflightInput): Promise<PreflightResult> {
+    return this.manager.preflight(input);
+  }
+
   wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult> {
     return this.manager.wait(input, signal);
   }
@@ -92,8 +103,8 @@ export class LocalTaskService implements TaskService {
     return this.manager.history(taskId, query);
   }
 
-  async message(taskId: string, message: string): Promise<SpawnResult> {
-    return this.show(await this.manager.message(taskId, message));
+  async message(taskId: string, message: string, contextFiles: string[] = []): Promise<SpawnResult> {
+    return this.show(await this.manager.message(taskId, message, contextFiles));
   }
 
   abort(taskId: string): Promise<AbortTaskResult> {
@@ -107,6 +118,10 @@ export class LocalTaskService implements TaskService {
     return this.manager.diff(taskId, options);
   }
 
+  async delivery(options: DeliveryOptions): Promise<DeliveryPackage> {
+    return this.manager.delivery(options);
+  }
+
   async list(filter: TaskListFilter): Promise<TaskView[]> {
     return this.manager.list(filter);
   }
@@ -117,5 +132,9 @@ export class LocalTaskService implements TaskService {
 
   approveCleanup(approvalId: string): Promise<CleanupResult> {
     return this.manager.approveCleanup(approvalId);
+  }
+
+  async resumeProvider(): Promise<{ resumed: boolean }> {
+    return this.manager.resumeProvider();
   }
 }

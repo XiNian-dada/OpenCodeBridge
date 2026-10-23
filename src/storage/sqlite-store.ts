@@ -122,6 +122,10 @@ const MIGRATIONS: string[] = [
     applied_at TEXT NOT NULL
   );
   `,
+  `
+  ALTER TABLE tasks ADD COLUMN context_path TEXT;
+  ALTER TABLE tasks ADD COLUMN context_files_json TEXT;
+  `,
 ];
 
 export class SqliteStore {
@@ -163,17 +167,17 @@ export class SqliteStore {
           idempotency_key, idempotency_fingerprint, task, repo_root, task_type,
           model, provider_id, model_id, model_variant, read_only, timeout_seconds,
           status, stage, session_id, server_pid, worktree_path, worktree_git_dir,
-          base_commit, created_at, started_at, ended_at, error_code, error_message,
-          result_summary, usage_json, last_event_sequence, stop_reason,
-          cancel_requested_at, updated_at
+          base_commit, context_path, context_files_json, created_at, started_at,
+          ended_at, error_code, error_message, result_summary, usage_json,
+          last_event_sequence, stop_reason, cancel_requested_at, updated_at
         ) VALUES (
           @id, @parent_task_id, @root_task_id, @turn, @opencode_task_id,
           @idempotency_key, @idempotency_fingerprint, @task, @repo_root, @task_type,
           @model, @provider_id, @model_id, @model_variant, @read_only, @timeout_seconds,
           @status, @stage, @session_id, @server_pid, @worktree_path, @worktree_git_dir,
-          @base_commit, @created_at, @started_at, @ended_at, @error_code, @error_message,
-          @result_summary, @usage_json, @last_event_sequence, @stop_reason,
-          @cancel_requested_at, @updated_at
+          @base_commit, @context_path, @context_files_json, @created_at, @started_at,
+          @ended_at, @error_code, @error_message, @result_summary, @usage_json,
+          @last_event_sequence, @stop_reason, @cancel_requested_at, @updated_at
         )
         ON CONFLICT(id) DO UPDATE SET
           parent_task_id = excluded.parent_task_id,
@@ -198,6 +202,8 @@ export class SqliteStore {
           worktree_path = excluded.worktree_path,
           worktree_git_dir = excluded.worktree_git_dir,
           base_commit = excluded.base_commit,
+          context_path = excluded.context_path,
+          context_files_json = excluded.context_files_json,
           started_at = excluded.started_at,
           ended_at = excluded.ended_at,
           error_code = excluded.error_code,
@@ -233,6 +239,8 @@ export class SqliteStore {
         worktree_path: task.worktree_path,
         worktree_git_dir: task.worktree_git_dir,
         base_commit: task.base_commit,
+        context_path: task.context_path,
+        context_files_json: JSON.stringify(task.context_files),
         created_at: task.created_at,
         started_at: task.started_at,
         ended_at: task.ended_at,
@@ -429,6 +437,18 @@ export function openSqliteStore(path: string): SqliteStore {
   return new SqliteStore(path);
 }
 
+function parseStringArray(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToTask(row: Record<string, unknown>): TaskRecord {
   return {
     id: String(row.id),
@@ -455,6 +475,8 @@ function rowToTask(row: Record<string, unknown>): TaskRecord {
     worktree_path: row.worktree_path === null ? null : String(row.worktree_path),
     worktree_git_dir: row.worktree_git_dir === null ? null : String(row.worktree_git_dir),
     base_commit: row.base_commit === null ? null : String(row.base_commit),
+    context_path: row.context_path === null || row.context_path === undefined ? null : String(row.context_path),
+    context_files: parseStringArray(row.context_files_json),
     created_at: String(row.created_at),
     started_at: row.started_at === null ? null : String(row.started_at),
     ended_at: row.ended_at === null ? null : String(row.ended_at),

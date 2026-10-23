@@ -37,6 +37,7 @@ async function makeOpenCodeHarness(scenario: FakeScenario) {
       allowed_repo_roots: [tempDir],
       require_git_for_writes: true,
       allow_external_directories: false,
+      read_sandbox: "auto",
     },
     opencode: {
       binary: "opencode",

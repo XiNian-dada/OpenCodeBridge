@@ -83,6 +83,7 @@ try {
   const toolNames = tools.tools.map((tool) => tool.name);
   for (const name of [
     "agent_capabilities",
+    "agent_preflight",
     "agent_wait",
     "agent_viewer",
     "agent_spawn",
@@ -90,6 +91,7 @@ try {
     "agent_history",
     "agent_message",
     "agent_diff",
+    "agent_delivery",
     "agent_abort",
     "agent_list",
     "agent_cleanup",
@@ -99,6 +101,13 @@ try {
 
   const capabilities = await call("agent_capabilities", {});
   assert(capabilities.json.capabilities?.simulated === true, "mock capabilities not disclosed");
+  const preflight = await call("agent_preflight", {
+    repo_root: repo,
+    read_only: true,
+  });
+  assert(preflight.json.preflight?.workspace?.kind === "repo_root", "preflight workspace mismatch");
+  assert(preflight.json.preflight?.permissions?.edit === false, "preflight read-only permissions mismatch");
+  assert(preflight.json.preflight?.workspace?.base_commit, "preflight missing git base");
   const viewer = await call("agent_viewer", {});
   assert(viewer.json.viewer?.url?.startsWith("http://127.0.0.1:"), "local viewer URL missing");
   assert(viewer.json.viewer.auto_open === false, "mock acceptance should not open a browser");
@@ -110,8 +119,9 @@ try {
     model: "mock/echo",
     timeout_seconds: 10,
     idempotency_key: "acceptance-1",
+    context_files: ["README.md"],
   });
-  assert(spawned.json.ok === true, "spawn failed");
+  assert(spawned.json.ok === true, `spawn failed: ${JSON.stringify(spawned.json)}`);
   const taskId = spawned.json.task.task_id;
   assert(spawned.json.task.read_only === true, "spawn should default to read-only");
   assert(spawned.json.viewer_url === viewer.json.viewer.url, "spawn should expose its automatic viewer");
@@ -121,6 +131,14 @@ try {
   const history = await call("agent_history", { task_id: taskId, limit: 100 });
   const eventTypes = history.json.events.map((event) => event.event_type);
   assert(eventTypes.includes("task.completed"), "missing task.completed event");
+
+  const delivery = await call("agent_delivery", { task_id: taskId });
+  assert(delivery.json.delivery?.verification?.status === "simulated", "delivery verification mismatch");
+  assert(delivery.json.delivery?.verification?.tests_run_by_bridge === false, "delivery claimed bridge tests");
+  assert(delivery.json.delivery?.commands?.length > 0, "delivery missing observed commands");
+  assert(delivery.json.delivery?.unverified?.length > 0, "delivery missing unverified fields");
+  assert(delivery.json.delivery?.context?.verified === true, "delivery context manifest missing");
+  assert(delivery.json.delivery?.context?.files?.[0]?.sha256, "delivery context hash missing");
 
   const follow = await call("agent_message", {
     task_id: taskId,

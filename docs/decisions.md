@@ -172,6 +172,13 @@ Status: accepted for Phase 1
 - `agent_capabilities` reads effective daemon policy without starting OpenCode
   or invoking a model. Configured allowlist entries are distinct from live
   availability; actual provider/model resolution remains at task start.
+- `agent_preflight` validates the exact path, Git state, workspace plan, model
+  policy, isolation, permissions, and budgets before a task is queued.
+- `agent_delivery` returns a base commit, changed files, patch hash, observed
+  commands, actual model resolution, and explicit verification gaps.
+- Provider auth, quota, and region errors set a daemon-wide pause; only the
+  local `bridge resume` CLI clears it. The bridge never switches models
+  automatically.
 - `agent_wait` waits inside the daemon for any of up to eight tasks. Its maximum
   wait is 50 seconds, below the documented 60-second MCP request timeout. A wait
   timeout never stops execution. Terminal states and permission requests wake
@@ -202,6 +209,42 @@ Status: accepted for Phase 1
   otherwise a follow-up could return an older turn's answer as its summary.
   Fake API fixtures now reproduce this ordering and distinct turn replies.
 
+## Phase 7 security and delivery follow-up
+
+- Read-only OpenCode tasks use a macOS Seatbelt denylist profile by default.
+  macOS 26 rejects narrow `file-read` allow lists, so the profile allows runtime
+  reads but denies file data under the user home, external mounts, and system
+  temp. Allowed paths are re-allowed after the deny rules. The profile still
+  needs network for the model provider and read access to OpenCode's own
+  auth/config directories; tool access to those directories is denied.
+- The OpenCode child environment is filtered to basic runtime variables and
+  provider key prefixes. Unrelated cloud, SSH, Git-host, and CI credentials are
+  not inherited.
+- `agent_preflight` validates the repository root, Git top level/HEAD, model
+  policy, planned workspace/worktree, effective permissions, isolation, budgets,
+  and timeout before a task is created. It reports unverified provider
+  availability and other known gaps.
+- `agent_delivery` returns the recorded base commit, changed files, patch and
+  SHA-256, observed commands and exit codes, actual model resolution when
+  available, usage/cost, and explicit verification status. The bridge never
+  claims it ran tests or commands it did not run.
+- OpenCode prompts now require review findings to include location, trigger,
+  evidence, and a confidence label (`reproduced`, `static-inference`, or
+  `needs-confirmation`), and to say "not run" when shell is unavailable.
+  Review/analysis replies must end with a fenced JSON findings block; delivery
+  parses it and reports `findings.verified: false` when it is missing,
+  malformed, or truncated.
+- Read-only tasks can request a minimal context snapshot. The bridge validates
+  repository-relative files, rejects traversal, limits file count/bytes, hashes
+  each file, copies only those files into a task-local workspace, and records a
+  manifest. A follow-up turn can add files through `agent_message.context_files`;
+  the worker cannot expand its own scope. SQLite schema v2 stores the snapshot
+  path and file list.
+- Provider authentication, quota, and region errors set a daemon-wide pause.
+  New spawns, messages, and preflights fail with `PROVIDER_PAUSED`; only the
+  local `bridge resume` CLI clears it. The bridge never switches models or
+  providers to work around the restriction.
+
 ## Automatic local conversation display
 
 - The daemon now serves a read-only local viewer. Successful task creation and
@@ -216,6 +259,16 @@ Status: accepted for Phase 1
   instruction field. It shows original delegation, actual prompt, assistant
   response and tool execution separately. Replies use final message readback;
   per-token streaming is outside this change.
+- The transcript is chat-shaped rather than a raw event timeline. Codex
+  delegation and follow-up messages render on the right, OpenCode replies on the
+  left, and tool/shell activity renders as grouped, collapsible cards. Turns
+  sharing a root task are merged into one conversation for context, while the
+  default view hides low-level audit events behind the existing toggle. The
+  visual system is monochrome and Vercel/Geist-inspired, with light and dark
+  modes.
+- Conversation messages use the delegation payload limit rather than the compact
+  audit limit, so assistant replies are not cut at the ordinary event-payload
+  boundary. Long messages still collapse to a preview in the viewer.
 - `agent_viewer` and `bridge viewer` recover the live URL; spawn/message also
   return `viewer_url`. Headless users can disable auto-open independently.
 - This is a local viewer usable with the current stdio integration. Optional

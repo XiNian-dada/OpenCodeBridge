@@ -46,6 +46,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "resume") {
+    const client = await ensureDaemon({ config, configPath, logger });
+    try {
+      print({ ok: true, ...(await client.resumeProvider()) }, json);
+    } finally {
+      client.close();
+    }
+    return;
+  }
+
   if (command === "daemon") {
     await daemonCommand(config, configPath, args, json);
     return;
@@ -63,6 +73,27 @@ async function main(): Promise<void> {
       } else {
         for (const task of tasks) printTaskLine(task);
       }
+    } finally {
+      client.close();
+    }
+    return;
+  }
+
+  if (command === "preflight") {
+    const repoRoot = firstPositional(args, ["--model"]);
+    if (repoRoot === undefined) {
+      throw new Error("Usage: bridge preflight <repo-root> [--writable] [--model <provider/model>]");
+    }
+    const readOnly = !args.includes("--writable");
+    const model = stringOption(args, "--model");
+    const client = await ensureDaemon({ config, configPath, logger });
+    try {
+      const preflight = await client.preflight({
+        repo_root: repoRoot,
+        read_only: readOnly,
+        ...(model === undefined ? {} : { model }),
+      });
+      print({ ok: true, preflight }, json);
     } finally {
       client.close();
     }
@@ -111,6 +142,23 @@ async function main(): Promise<void> {
       });
       if (json) print({ ok: true, ...diff }, true);
       else printDiff(diff);
+    } finally {
+      client.close();
+    }
+    return;
+  }
+
+  if (command === "delivery") {
+    const taskId = args[0];
+    if (taskId === undefined) throw new Error("Usage: bridge delivery <task-id> [--max-chars N]");
+    const maxChars = numericOption(args, "--max-chars");
+    const client = await ensureDaemon({ config, configPath, logger });
+    try {
+      const delivery = await client.delivery({
+        task_id: taskId,
+        ...(maxChars === undefined ? {} : { max_chars: maxChars }),
+      });
+      print({ ok: true, delivery }, json);
     } finally {
       client.close();
     }
@@ -387,14 +435,17 @@ function usage(): string {
     "Usage: bridge <command>",
     "",
     "  tasks [--status <status>] [--repo <path>] [--model <model>] [--limit N]",
+    "  preflight <repo-root> [--writable] [--model <provider/model>]",
     "  status <task-id>",
     "  logs <task-id> [--follow] [--limit N] [--types a,b]",
     "  viewer [--json]  Open the automatically updating local conversation viewer",
     "  diff <task-id> [--file <path>] [--max-chars N]",
+    "  delivery <task-id> [--max-chars N]",
     "  abort <task-id>",
     "  message <task-id> <message>",
     "  cleanup [--apply] [--task <id>] [--no-logs] [--no-worktrees]",
     "  approve <approval-id>",
+    "  resume  Clear a provider/account pause after the restriction is resolved",
     "  daemon <status|stop>",
     "",
     "Add --json for machine-readable output.",

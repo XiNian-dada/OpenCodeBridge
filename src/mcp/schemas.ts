@@ -40,6 +40,11 @@ export const AgentSpawnInput = z
       .max(200)
       .optional()
       .describe("Optional key that makes retries of the same spawn return the same task"),
+    context_files: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe("Read-only tasks only: repository-relative files to copy into a minimal context workspace; dependencies are not resolved automatically"),
   })
   .strict();
 
@@ -47,6 +52,39 @@ export const AgentStatusInput = z.object({ task_id: taskId, detail: taskDetail }
 
 export const AgentCapabilitiesInput = z.object({}).strict();
 export const AgentViewerInput = z.object({}).strict();
+
+export const AgentPreflightInput = z
+  .object({
+    repo_root: repoRoot,
+    model: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Optional model in provider/model form; validated against the allowlist"),
+    read_only: z
+      .boolean()
+      .default(true)
+      .describe("Plan a read-only task (default) or an isolated writable task"),
+    context_files: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe("Read-only tasks only: repository-relative files to hash and plan for the context workspace"),
+  })
+  .strict();
+
+export const AgentDeliveryInput = z
+  .object({
+    task_id: taskId,
+    max_chars: z
+      .number()
+      .int()
+      .min(1000)
+      .max(200000)
+      .optional()
+      .describe("Maximum patch characters to include (default 200000)"),
+  })
+  .strict();
 
 export const AgentWaitInput = z.object({
   task_ids: z.array(taskId).min(1).max(8).describe("Tasks to wait on; returns when any is terminal or needs permission"),
@@ -99,6 +137,11 @@ export const AgentMessageInput = z
       .min(1)
       .max(100_000)
       .describe("Follow-up instruction for the same OpenCode session and workspace"),
+    context_files: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe("Read-only lineage only: additional repository-relative files to include in a new context snapshot"),
   })
   .strict();
 

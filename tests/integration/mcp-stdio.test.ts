@@ -104,12 +104,14 @@ describe("MCP stdio server with mock adapter", () => {
         expect.arrayContaining([
           "agent_spawn",
           "agent_capabilities",
+          "agent_preflight",
           "agent_wait",
           "agent_viewer",
           "agent_status",
           "agent_history",
           "agent_message",
           "agent_diff",
+          "agent_delivery",
           "agent_cleanup",
           "agent_abort",
           "agent_list",
@@ -120,6 +122,18 @@ describe("MCP stdio server with mock adapter", () => {
       expect(capabilities.isError).toBe(false);
       expect(capabilities.json.capabilities).toMatchObject({ adapter: "mock", simulated: true });
       expect((await callTool(mcp.client, "agent_viewer", {})).json.viewer).toEqual({ url: null, auto_open: false });
+
+      const preflight = await callTool(mcp.client, "agent_preflight", {
+        repo_root: harness.repoRoot,
+        read_only: true,
+      });
+      expect(preflight.isError).toBe(false);
+      expect(preflight.json.preflight).toMatchObject({
+        adapter: "mock",
+        simulated: true,
+        workspace: { kind: "repo_root" },
+        permissions: { read: true, edit: false, shell: false },
+      });
 
       const spawnArgs = {
         ...spawnInput(harness.repoRoot),
@@ -168,6 +182,15 @@ describe("MCP stdio server with mock adapter", () => {
       expect(incremental.json.events).toEqual([]);
       expect(incremental.json.task).not.toHaveProperty("task");
       expect(incremental.json.task_text_omitted).toBe(true);
+
+      const delivery = await callTool(mcp.client, "agent_delivery", { task_id: taskId });
+      expect(delivery.isError).toBe(false);
+      expect(delivery.json.delivery).toMatchObject({
+        status: "completed",
+        verification: { status: "simulated", tests_run_by_bridge: false },
+        model: { requested: "mock/echo", simulated: true },
+      });
+      expect((delivery.json.delivery as { unverified: unknown[] }).unverified.length).toBeGreaterThan(0);
 
       const followUp = await callTool(mcp.client, "agent_message", {
         task_id: taskId,

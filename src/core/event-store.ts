@@ -4,6 +4,8 @@ import { Redactor } from "./redact.js";
 
 export interface EventStoreOptions {
   redactor: Redactor;
+  /** Conversation messages can be larger than ordinary audit payloads. */
+  messageRedactor?: Redactor;
   maxPayloadChars: number;
   now?: () => Date;
 }
@@ -15,11 +17,13 @@ export interface AppendEventOptions {
 export class EventStore {
   private readonly eventsByTask = new Map<string, BridgeEvent[]>();
   private readonly redactor: Redactor;
+  private readonly messageRedactor: Redactor;
   private readonly maxPayloadChars: number;
   private readonly now: () => Date;
 
   constructor(options: EventStoreOptions) {
     this.redactor = options.redactor;
+    this.messageRedactor = options.messageRedactor ?? options.redactor;
     this.maxPayloadChars = options.maxPayloadChars;
     this.now = options.now ?? (() => new Date());
   }
@@ -46,7 +50,8 @@ export class EventStore {
   ): BridgeEvent {
     const events = this.eventsByTask.get(taskId) ?? [];
     const sequence = (events.at(-1)?.sequence ?? 0) + 1;
-    const redacted = this.redactor.redact(payload) as Record<string, unknown>;
+    const redactor = eventType === "opencode.message" ? this.messageRedactor : this.redactor;
+    const redacted = redactor.redact(payload) as Record<string, unknown>;
     const maxChars = options.maxPayloadChars ?? this.maxPayloadChars;
     const serialized = JSON.stringify(redacted);
 

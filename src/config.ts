@@ -50,6 +50,7 @@ const RawConfigSchema = z
         allowed_repo_roots: z.array(z.string().min(1)).optional(),
         require_git_for_writes: z.boolean().optional(),
         allow_external_directories: z.boolean().optional(),
+        read_sandbox: z.enum(["auto", "require", "off"]).optional(),
       })
       .strict()
       .optional(),
@@ -107,6 +108,7 @@ export interface BridgeConfig {
     allowed_repo_roots: string[];
     require_git_for_writes: boolean;
     allow_external_directories: boolean;
+    read_sandbox: "auto" | "require" | "off";
   };
   opencode: {
     binary: string;
@@ -270,6 +272,7 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
       allowed_repo_roots: allowedRepoRoots,
       require_git_for_writes: raw.security?.require_git_for_writes ?? true,
       allow_external_directories: raw.security?.allow_external_directories ?? false,
+      read_sandbox: raw.security?.read_sandbox ?? "auto",
     },
     opencode: {
       binary: raw.opencode?.binary ?? "opencode",

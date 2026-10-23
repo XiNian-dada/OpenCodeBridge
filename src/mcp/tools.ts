@@ -12,6 +12,8 @@ import {
   AgentSpawnInput,
   AgentStatusInput,
   AgentCapabilitiesInput,
+  AgentPreflightInput,
+  AgentDeliveryInput,
   AgentWaitInput,
   AgentViewerInput,
 } from "./schemas.js";
@@ -73,6 +75,29 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
   );
 
   server.registerTool(
+    "agent_preflight",
+    {
+      title: "Preflight a delegation",
+      description: "Validate the repository root, Git base, planned workspace/worktree, model policy, effective permissions, isolation and budgets before spawning. Catches path and sandbox problems without starting OpenCode or calling a model. Provider availability remains unverified until task start.",
+      inputSchema: AgentPreflightInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (input) => {
+      try {
+        const preflight = await service.preflight({
+          repo_root: input.repo_root,
+          read_only: input.read_only,
+          ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.context_files === undefined ? {} : { context_files: input.context_files }),
+        });
+        return success({ ok: true, preflight });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "agent_wait",
     {
       title: "Wait for delegated tasks",
@@ -119,6 +144,9 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           ...(input.idempotency_key === undefined
             ? {}
             : { idempotency_key: input.idempotency_key }),
+          ...(input.context_files === undefined
+            ? {}
+            : { context_files: input.context_files }),
         });
         return success({
           ok: true,
@@ -238,6 +266,28 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
   );
 
   server.registerTool(
+    "agent_delivery",
+    {
+      title: "Build a verifiable delivery package",
+      description:
+        "Return a reviewable package for a task: base commit, changed files, patch hash, observed commands and exit codes, actual model resolution, usage and an explicit verification status. The bridge does not run tests; unverified fields are labelled.",
+      inputSchema: AgentDeliveryInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (input) => {
+      try {
+        const delivery = await service.delivery({
+          task_id: input.task_id,
+          ...(input.max_chars === undefined ? {} : { max_chars: input.max_chars }),
+        });
+        return success({ ok: true, delivery });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "agent_message",
     {
       title: "Continue a task session",
@@ -252,7 +302,11 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
     },
     async (input) => {
       try {
-        const result = await service.message(input.task_id, input.message);
+        const result = await service.message(
+          input.task_id,
+          input.message,
+          input.context_files ?? [],
+        );
         return success({
           ok: true,
           task: taskPayload(result.task),

@@ -42,6 +42,7 @@ export interface AbortResult {
 export interface AgentAdapter {
   readonly name: string;
   readonly supportsWrites: boolean;
+  readonly supportsReadIsolation?: boolean;
   readonly requiresIsolatedWorktree: boolean;
   probe(): Promise<AdapterProbe>;
   buildPrompt(task: TaskRecord): string;

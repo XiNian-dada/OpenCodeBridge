@@ -33,6 +33,7 @@ function config(dir: string): BridgeConfig {
       allowed_repo_roots: [dir],
       require_git_for_writes: true,
       allow_external_directories: false,
+      read_sandbox: "auto",
     },
     opencode: {
       binary: "opencode",
@@ -75,6 +76,8 @@ function runningTask(dir: string): TaskRecord {
     worktree_path: null,
     worktree_git_dir: null,
     base_commit: null,
+    context_path: null,
+    context_files: [],
     created_at: now,
     started_at: now,
     ended_at: null,

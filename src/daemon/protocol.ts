@@ -5,6 +5,7 @@ import { TASK_STATUSES, TASK_TYPES } from "../types.js";
 export const IPC_METHODS = [
   "viewer",
   "capabilities",
+  "preflight",
   "wait",
   "spawn",
   "status",
@@ -12,9 +13,11 @@ export const IPC_METHODS = [
   "message",
   "abort",
   "diff",
+  "delivery",
   "list",
   "cleanup",
   "approve_cleanup",
+  "resume_provider",
   "shutdown",
 ] as const;
 
@@ -53,16 +56,35 @@ const SpawnParams = z
     read_only: z.boolean(),
     timeout_seconds: z.number().int().min(1).max(7200),
     idempotency_key: z.string().min(1).max(200).optional(),
+    context_files: z.array(z.string().min(1)).max(100).optional(),
   })
   .strict();
 
 const StatusParams = z.object({ task_id: z.string().min(1) }).strict();
+const PreflightParams = z
+  .object({
+    repo_root: z.string().min(1),
+    model: z.string().min(1).optional(),
+    read_only: z.boolean(),
+    context_files: z.array(z.string().min(1)).max(100).optional(),
+  })
+  .strict();
+const DeliveryParams = z
+  .object({
+    task_id: z.string().min(1),
+    max_chars: z.number().int().min(1000).max(200_000).optional(),
+  })
+  .strict();
 const WaitParams = z.object({
   task_ids: z.array(z.string().min(1)).min(1).max(8),
   timeout_seconds: z.number().int().min(0).max(50),
 }).strict();
 const MessageParams = z
-  .object({ task_id: z.string().min(1), message: z.string().min(1).max(100_000) })
+  .object({
+    task_id: z.string().min(1),
+    message: z.string().min(1).max(100_000),
+    context_files: z.array(z.string().min(1)).max(100).optional(),
+  })
   .strict();
 const AbortParams = z.object({ task_id: z.string().min(1) }).strict();
 const HistoryParams = z
@@ -98,6 +120,7 @@ const CleanupParams = z
   })
   .strict();
 const ApproveCleanupParams = z.object({ approval_id: z.string().min(1) }).strict();
+const ResumeProviderParams = z.object({}).strict();
 
 export function parseParams<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -113,6 +136,7 @@ export function parseParams<T>(schema: z.ZodType<T>, value: unknown): T {
 export const IpcParams = {
   viewer: z.object({}).strict(),
   capabilities: z.object({}).strict(),
+  preflight: PreflightParams,
   wait: WaitParams,
   spawn: SpawnParams,
   status: StatusParams,
@@ -120,7 +144,9 @@ export const IpcParams = {
   abort: AbortParams,
   history: HistoryParams,
   diff: DiffParams,
+  delivery: DeliveryParams,
   list: ListParams,
   cleanup: CleanupParams,
   approve_cleanup: ApproveCleanupParams,
+  resume_provider: ResumeProviderParams,
 } as const;

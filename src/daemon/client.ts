@@ -15,6 +15,10 @@ import type {
   WaitTasksInput,
   WaitTasksResult,
   TaskViewerInfo,
+  PreflightInput,
+  PreflightResult,
+  DeliveryOptions,
+  DeliveryPackage,
 } from "../types.js";
 import type { TaskDiffResult, TaskHistoryResult, TaskService } from "../core/task-service.js";
 import type { IpcResponse } from "./protocol.js";
@@ -73,6 +77,10 @@ export class IpcTaskClient implements TaskService {
     return this.request("capabilities", {});
   }
 
+  preflight(input: PreflightInput): Promise<PreflightResult> {
+    return this.request("preflight", input);
+  }
+
   wait(input: WaitTasksInput): Promise<WaitTasksResult> {
     return this.request("wait", input);
   }
@@ -95,8 +103,12 @@ export class IpcTaskClient implements TaskService {
     });
   }
 
-  message(taskId: string, message: string): Promise<SpawnResult> {
-    return this.request("message", { task_id: taskId, message });
+  message(taskId: string, message: string, contextFiles: string[] = []): Promise<SpawnResult> {
+    return this.request("message", {
+      task_id: taskId,
+      message,
+      ...(contextFiles.length === 0 ? {} : { context_files: contextFiles }),
+    });
   }
 
   abort(taskId: string): Promise<AbortTaskResult> {
@@ -118,12 +130,23 @@ export class IpcTaskClient implements TaskService {
     return this.request("list", filter);
   }
 
+  delivery(options: DeliveryOptions): Promise<DeliveryPackage> {
+    return this.request("delivery", {
+      task_id: options.task_id,
+      ...(options.max_chars === undefined ? {} : { max_chars: options.max_chars }),
+    });
+  }
+
   cleanup(options: CleanupOptions): Promise<CleanupResult> {
     return this.request("cleanup", options);
   }
 
   approveCleanup(approvalId: string): Promise<CleanupResult> {
     return this.request("approve_cleanup", { approval_id: approvalId });
+  }
+
+  resumeProvider(): Promise<{ resumed: boolean }> {
+    return this.request("resume_provider", {});
   }
 
   async shutdownDaemon(): Promise<void> {

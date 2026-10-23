@@ -18,6 +18,7 @@ export function taskPayload(task: TaskView, detail: TaskDetail = "full"): Record
     read_only: task.read_only,
     session_id: task.session_id,
     worktree_path: task.worktree_path,
+    context_path: task.context_path,
     duration_ms: task.duration_ms,
     queue_position: task.queue_position,
     total_tokens: task.usage.total_tokens,

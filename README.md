@@ -3,18 +3,23 @@
 An MCP bridge that lets Codex delegate bounded coding tasks to OpenCode while
 keeping task state, prompts, events, and cancellation under bridge control.
 
-> **Phase 6 status:** the task-inspection CLI (`tasks`, `status`, `logs --follow`,
-> `diff`), install/uninstall documentation, and an end-to-end acceptance script
-> are implemented. Budgets, cleanup, approvals, daemon persistence, and restart
-> recovery are in place. An automatic read-only local conversation viewer is
-> now included alongside the CLI.
+> **Phase 7 status:** read-only Seatbelt isolation, filtered child environment,
+> `agent_preflight`, `agent_delivery`, minimal context snapshots, provider
+> pause/resume, and evidence-strength review prompts are implemented. The task
+> inspection CLI, install/uninstall documentation, budgets, cleanup, approvals,
+> daemon persistence, restart recovery, and the automatic local conversation
+> viewer remain in place.
 
 ## What works now
 
 - MCP stdio server (`@modelcontextprotocol/server` v2)
-- Eleven tools: `agent_viewer`, `agent_capabilities`, `agent_spawn`, `agent_wait`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_abort`, `agent_list`, `agent_cleanup`
+- Thirteen tools: `agent_viewer`, `agent_capabilities`, `agent_preflight`, `agent_spawn`, `agent_wait`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_delivery`, `agent_abort`, `agent_list`, `agent_cleanup`
 - Automatic local live viewer for delegated tasks, exact recorded prompts, replies, and tool calls
-- Policy/isolation discovery without a model call, bounded batch waiting, and compact task snapshots
+- Policy/isolation discovery without a model call, preflight validation, bounded batch waiting, and compact task snapshots
+- Verifiable delivery packages with base commit, patch hash, observed commands, actual model resolution, and explicit verification gaps
+- macOS read-only Seatbelt isolation with a filtered child environment
+- Minimal hashed context snapshots for read-only tasks, with main-Agent-controlled expansion
+- Provider auth/quota/region pause with a local `bridge resume` channel
 - FIFO queue with configurable concurrency and queue limits
 - Explicit task state machine with verified cancellation
 - Idempotency keys
@@ -45,11 +50,14 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Independent local CLI approval channel (`bridge approve <id>`)
 - Log retention and safe clean-worktree removal
 - CLI task inspection:
+  - `bridge preflight`
   - `bridge tasks`
   - `bridge status`
   - `bridge logs --follow`
   - `bridge diff`
+  - `bridge delivery`
   - `bridge abort` / `bridge message`
+  - `bridge resume`
   - `--json` output for scripting
 - End-to-end mock acceptance script
 
@@ -61,7 +69,9 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Git
 - Codex CLI with MCP support (0.152.0 tested)
 - OpenCode **2.1.x** for the real adapter (v2.1.2 tested)
-- macOS for writable OpenCode tasks (`sandbox-exec`); other platforms are read-only
+- macOS for writable OpenCode tasks (`sandbox-exec`) and read-only OS read
+  isolation; Linux read-only tasks fall back to OpenCode permissions unless an
+  OS sandbox is added
 - The daemon starts automatically when the MCP server connects
 
 Node 23 is EOL and is not supported. This machine has a keg-only Homebrew Node 24:
@@ -121,11 +131,17 @@ root with a real absolute path.
 - `adapter` can be `mock` or `opencode`.
 - `security.allowed_repo_roots` is required. An empty list means every
   repository is rejected.
+- `security.read_sandbox` defaults to `auto`: read-only OpenCode tasks use a
+  macOS Seatbelt read profile when available. `require` rejects read-only tasks
+  without OS read isolation; `off` keeps OpenCode permissions only.
 - `models.allow` is an exact allowlist. A model not in it is rejected with
   `MODEL_NOT_ALLOWED`.
 - Models listed in `models.expensive` require `models.allow_expensive: true`.
   The bridge never upgrades models automatically.
 - `scheduler.max_concurrent` defaults to 2; `max_queue` defaults to 10.
+- The OpenCode child environment is filtered. Only basic runtime variables and
+  provider key prefixes are inherited; unrelated cloud, SSH, Git-host, and CI
+  credentials are removed.
 
 ### Using the real OpenCode adapter
 
@@ -158,8 +174,13 @@ rejects missing models with `MODEL_UNAVAILABLE`.
 }
 ```
 
-Read-only OpenCode tasks run in the target repository with edit, shell,
-external-directory, web, subagent, and question permissions denied.
+Read-only OpenCode tasks run with edit, shell, external-directory, web,
+subagent, and question permissions denied. On macOS they also run under a
+Seatbelt read profile by default: the user home, external mounts, and system
+temp outside the task area are hidden from the process. The model transport
+still needs network access and OpenCode's own auth/config directories; tool
+access to those directories is denied. Provider availability remains
+unverified until task start.
 
 Writable OpenCode tasks (`read_only: false`) require macOS and a Git repository.
 The bridge creates a detached worktree under `data_dir/worktrees/`, starts
@@ -242,16 +263,21 @@ codex mcp list
 
 Real OpenCode tasks automatically open a local conversation viewer when they
 are created. The viewer follows new tasks and follow-up turns, shows the latest
-100 tasks, and polls the existing audit records every second (every five seconds
-while its tab is in the background). It displays the delegated instruction,
-actual Bridge prompt, latest assistant reply, tool arguments/results and errors.
-Replies appear after OpenCode's message readback completes; token-by-token reply
-streaming is not implemented. Expand the actual prompt or tool result to inspect
-its recorded content, or enable **全部审计事件** for system events and session
-message readbacks. Existing redaction and truncation limits still apply.
+100 turns grouped into conversations by root task, and polls the existing audit
+records every second (every five seconds while its tab is in the background).
+The transcript uses a chat layout: Codex delegation and follow-up instructions
+appear on the right, OpenCode replies on the left, and tool activity is shown as
+collapsible cards. The interface follows a monochrome Vercel/Geist-style visual
+system with light and dark modes. Multi-turn work stays in one conversation, so
+a follow-up turn does not replace the earlier context. Replies appear after OpenCode's
+message readback completes; token-by-token reply streaming is not implemented.
+Long messages start collapsed with an **展开完整内容** control, so the transcript
+stays scannable. Expand the actual prompt or a tool result to inspect its
+recorded content, or enable **全部审计事件** for system events and session message
+readbacks. Existing redaction and truncation limits still apply.
 
 An already-polling viewer follows new tasks without opening duplicate tabs.
-Selecting an older task pauses automatic following; re-enable **自动跟随新任务**
+Selecting an older task pauses automatic following; re-enable **自动跟随**
 to follow again. If the tab was closed, the next task reopens it once no viewer
 heartbeat has been received for ten seconds. Automatic opening uses the default
 browser on macOS/Linux. `agent_viewer` returns the private URL without a model
@@ -288,11 +314,36 @@ configured model has a `permitted` flag and an error code when policy blocks it.
 This does not start OpenCode, query provider quotas, or invoke a model. Model
 availability is validated at task start; allowlisting alone does not prove an
 ID exists upstream. Mock capabilities and results are explicitly simulated.
+`provider_paused` is populated after a provider auth/quota/region error and
+blocks new delegations until the local `bridge resume` command clears it.
 
-The response also discloses the lack of OS read isolation, per-file scope
-enforcement, and independent verification of OpenCode's internal model calls.
-Do not delegate writable work if your task requires boundaries the bridge does
-not enforce. In that case Codex should implement the changes directly.
+The response also discloses the lack of OS read isolation when it is not
+available, per-file scope enforcement, and independent verification of
+OpenCode's internal model calls. Do not delegate writable work if your task
+requires boundaries the bridge does not enforce. In that case Codex should
+implement the changes directly.
+
+### `agent_preflight`
+
+Call with the same repository root, model, and `read_only` mode you plan to use.
+The daemon validates the path against `security.allowed_repo_roots`, resolves
+the real Git top level and recorded `HEAD`, checks model policy, and returns:
+
+- the actual repository root, Git top level, base commit, and main-worktree
+  dirty files
+- whether the workspace is the repository root or an isolated worktree to be
+  created at task start, plus the planned worktree parent
+- effective read/glob/grep/edit/write/patch permissions and denied shell, web,
+  external-directory, subagent, and question capabilities
+- actual OS read/write isolation and the provider-network/credential exceptions
+- a planned context snapshot with per-file SHA-256 and total bytes when
+  `context_files` is supplied
+- soft budgets, hard limits, default/max timeout, warnings, and an explicit
+  `unverified` list
+
+It does not create a task, start OpenCode, or call a model. A directory outside
+the allowlist, a disallowed model, or a missing Git base fails here instead of
+failing after a task has been queued.
 
 ### `agent_spawn`
 
@@ -308,13 +359,21 @@ file scope, constraints, acceptance criteria, and a short expected report.
   "model": "provider/model",
   "read_only": true,
   "timeout_seconds": 120,
-  "idempotency_key": "parser-edge-cases"
+  "idempotency_key": "parser-edge-cases",
+  "context_files": ["src/parser.ts", "package.json"]
 }
 ```
 
 For the OpenCode adapter, set `read_only: false` only when you want an isolated
 worktree and are on macOS with `sandbox-exec`. Writable tasks are edit-only;
 Codex remains responsible for running tests and merging.
+
+Read-only tasks can pass `context_files` (repository-relative paths). The bridge
+validates and hashes them, rejects traversal, and runs OpenCode in a task-local
+workspace containing only those files. Limits are 100 files, 2 MiB per file, and
+8 MiB total. Dependencies are not resolved automatically; a missing dependency
+should be reported by the worker, and the main Agent can add it with
+`agent_message.context_files`.
 
 ### `agent_wait`
 
@@ -353,7 +412,9 @@ messages, tool events, shell events, and Bridge/OpenCode server events. Supports
 fetching old events. The task header omits the original instruction text by
 default (`task_text_omitted: true`); pass `include_task: true` to include it.
 Recorded prompt events remain available. Payloads are redacted and truncated
-according to the configured history limits.
+according to the configured history limits. Conversation messages
+(`opencode.message`) use `history.max_delegation_chars` rather than the smaller
+audit payload limit, so assistant replies remain readable in the viewer.
 
 For the real adapter, tool and shell records come from OpenCode SSE events;
 assistant messages are read back from the session API. If the event stream
@@ -369,11 +430,30 @@ task** linked to the original. The new task has its own task ID, `parent_task_id
 Messages are serialized: if any task in the lineage is still active, the call
 returns `TASK_BUSY`.
 
+For a read-only task that used `context_files`, pass `context_files` to add
+files. The bridge creates a new context snapshot for the turn; the worker cannot
+expand its own access.
+
 ### `agent_diff`
 
 Returns the task worktree's Git status, modified/added/deleted/untracked files,
 line counts, and a patch. Use `file` to inspect one path and `max_chars` to limit
 the patch. Worktrees are retained after completion or failure for review.
+
+### `agent_delivery`
+
+Returns a reviewable delivery package instead of a bare "completed" claim. It
+includes the recorded base commit, worktree, changed files, patch, patch SHA-256,
+observed shell/tool commands and any exit codes, the actually resolved model
+when an `opencode.model.resolved` event exists, the context snapshot manifest
+when one was used, usage/cost, and a verification status. Review/analysis tasks
+are prompted to end with a fenced JSON findings block; `delivery.findings`
+contains the parsed `location`, `trigger`, `evidence`, and `confidence` values,
+and `verified: false` when the block is missing, malformed, or truncated.
+The bridge does not execute tests or commands; those fields are marked
+`unverified`, `tests_run_by_bridge: false`, and `verified_by_bridge: false`.
+Mock commands are labelled `simulated`. This tool is read-only and does not
+modify the worktree.
 
 ### `agent_abort`
 
@@ -391,14 +471,17 @@ status fields. `total` is the number returned, not a count of all stored tasks.
 
 ```text
 1. agent_capabilities to inspect model policy and isolation limits.
-2. agent_list with project/status filters to check for existing work.
-3. agent_spawn for a bounded task worth the handoff cost; use an idempotency key.
-4. agent_wait on the returned task ID(s); continue independent Codex work between waits.
+2. agent_preflight with the exact repo_root, model, and read_only mode; fix path,
+   Git, sandbox, or model-policy errors before queueing work.
+3. agent_list with project/status filters to check for existing work.
+4. agent_spawn for a bounded task worth the handoff cost; use an idempotency key.
+5. agent_wait on the returned task ID(s); continue independent Codex work between waits.
    The automatically opened viewer shows the task's conversation and tool activity.
-5. agent_history (incremental after sequence) and agent_diff to review actual activity and changes.
-6. Run relevant tests yourself and integrate only reviewed changes.
-7. If needed, agent_message continues the session; wait on its NEW turn task ID.
-8. agent_cleanup dry-run to inspect retained resources after integration.
+6. agent_history (incremental after sequence), agent_diff, and agent_delivery to review
+   actual activity, changes, patch hash, observed commands, and verification gaps.
+7. Run relevant tests yourself and integrate only reviewed changes.
+8. If needed, agent_message continues the session; wait on its NEW turn task ID.
+9. agent_cleanup dry-run to inspect retained resources after integration.
 ```
 
 Mock events are explicitly mock-labelled. Real OpenCode events are obtained from
@@ -427,6 +510,8 @@ Add `--json` for scripting.
 
 ```bash
 bridge tasks --status running --limit 20
+bridge preflight /Users/you/Code/example --json
+bridge preflight /Users/you/Code/example --writable --model opencode/deepseek-v4.1-flash-free
 bridge viewer
 bridge tasks --repo /Users/you/Code/example --json
 bridge status <task-id>
@@ -435,19 +520,34 @@ bridge logs --follow <task-id>
 bridge logs <task-id> --types tool.called,tool.completed
 bridge diff <task-id>
 bridge diff <task-id> --file src/parser.ts --max-chars 20000
+bridge delivery <task-id>
 bridge abort <task-id>
 bridge message <task-id> "Please add the missing edge-case assertion."
 ```
 
 `bridge logs --follow` polls the daemon and prints new events until Ctrl-C.
 `bridge diff` shows the worktree file summary and patch; large patches are
-truncated unless a larger `--max-chars` is supplied.
+truncated unless a larger `--max-chars` is supplied. `bridge delivery` returns
+the same verifiable package as `agent_delivery`.
 
 ## Budgets and cleanup
 
 `models.max_tokens` and `models.max_cost_usd` are soft budgets. Usage events are
 checked while a task runs; exceeding a limit requests cancellation and records
 `BUDGET_EXCEEDED`. Cost enforcement requires the provider to report a known cost.
+Queue size, concurrency, and task timeouts are hard limits. Preflight reports
+which limits are hard and which are soft.
+
+Provider authentication, account/quota, and region errors set a daemon-wide
+pause: new spawns, messages, and preflights fail with `PROVIDER_PAUSED`. The
+bridge never switches providers or models to work around the restriction.
+Resolve the account issue, then clear the pause locally:
+
+```bash
+bridge resume
+```
+
+The pause is process-local; restarting the daemon also clears it.
 
 `agent_cleanup` plans cleanup by default (`dry_run: true`). With `dry_run: false`
 it:
@@ -463,6 +563,7 @@ Approvals are executed only through the local CLI:
 bridge cleanup                 # dry-run plan
 bridge cleanup --apply         # safe cleanup; dirty worktrees become approvals
 bridge approve <approval-id>   # user-only destructive action
+bridge resume                  # clear a provider/account pause
 bridge daemon status
 bridge daemon stop
 ```
@@ -471,9 +572,16 @@ Before an approved dirty worktree is force-removed, the bridge saves its patch
 under `data_dir/approvals/<approval-id>.patch`. An MCP tool call alone can never
 consume an approval.
 
-## Security boundaries in Phase 6
+## Security boundaries in Phase 7
 
 - Only paths under `security.allowed_repo_roots` are accepted.
+- Read-only OpenCode tasks use a macOS Seatbelt read profile by default. The
+  user home, external mounts, and system temp outside the task area are hidden
+  from the process. `security.read_sandbox: "require"` fails closed on hosts
+  without it.
+- The child environment is filtered: unrelated cloud, SSH, Git-host, and CI
+  credentials are not inherited. Provider key prefixes are retained because
+  OpenCode needs them to reach the model.
 - Writable OpenCode tasks are enabled only on macOS with `sandbox-exec`.
 - Writable tasks use a detached Git worktree; uncommitted main-tree changes are
   not carried into the worktree.
@@ -496,10 +604,15 @@ consume an approval.
   local `bridge approve` CLI, not by Codex.
 - MCP logs go to stderr. stdout is reserved for the JSON-RPC protocol.
 
-**Known limitations:** the Seatbelt profile confines writes but still allows
-reads broadly; read-only tasks rely on OpenCode permissions rather than an OS
-read sandbox. Do not run untrusted repositories without reviewing this boundary.
-Writable tasks are edit-only, so OpenCode cannot run tests. Worktrees and logs
+**Known limitations:** on macOS, the read profile is a denylist overlay rather
+than a complete read whitelist. The OpenCode process can still read its provider
+auth/config directories because the model transport needs them; tool access to
+those directories is denied, but this is not a credential-free gateway. Outbound
+network is available for the model provider; worker web, shell, subagent, and
+external-directory tools are denied. On Linux, read-only tasks rely on OpenCode
+permissions unless OS read isolation is added. The writable Seatbelt profile
+still allows broad reads. Writable tasks are edit-only, so OpenCode cannot run
+tests. Worktrees and logs
 are retained by default; `agent_cleanup` and the local approval CLI remove safe
 resources, while dirty worktrees require user approval. The main repository's
 Git object store is deliberately not writable from the sandbox. Tasks now survive MCP
@@ -517,7 +630,9 @@ model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
 startup, worktrees, diffs, session continuation, SQLite persistence, daemon
 IPC/reconnect, restart recovery, budgets, cleanup approvals, CLI approval and
-inspection, Seatbelt write confinement, and fake OpenCode adapter lifecycles.
+inspection, Seatbelt read/write confinement, filtered child environments,
+preflight validation, delivery packages, minimal context snapshots, provider
+pause/resume, and fake OpenCode adapter lifecycles.
 It also checks capability policy reporting, batch wait completion/deadlines,
 permission wakeups, input bounds, read-only defaults, compact/full results, and
 incremental history headers through MCP and daemon IPC.
@@ -555,6 +670,7 @@ listing without spending model credits.
 | 4 | **Done:** SQLite, daemon, Unix socket IPC, queue persistence, restart recovery, usage records |
 | 5 | **Done:** budgets, log retention, cleanup plans, independent CLI approval for dirty worktrees |
 | 6 | **Done:** CLI inspection/live logs/diff, install/uninstall docs, acceptance script |
+| 7 | **Done:** read-only Seatbelt denylist, filtered child environment, `agent_preflight`, `agent_delivery`, minimal context snapshots, provider pause/resume, evidence-strength review prompts |
 
 See `docs/decisions.md` for technical decisions and
 `examples/codex-config.toml` for a ready-to-edit Codex configuration.

@@ -67,6 +67,14 @@ export interface SpawnTaskInput {
   read_only: boolean;
   timeout_seconds: number;
   idempotency_key?: string;
+  /** Read-only tasks can run against a minimal copied context workspace. */
+  context_files?: string[];
+}
+
+export interface ContextFile {
+  path: string;
+  sha256: string;
+  bytes: number;
 }
 
 export interface TaskRecord {
@@ -93,6 +101,8 @@ export interface TaskRecord {
   worktree_path: string | null;
   worktree_git_dir: string | null;
   base_commit: string | null;
+  context_path: string | null;
+  context_files: string[];
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -132,6 +142,7 @@ export interface TaskView {
   timeout_seconds: number;
   session_id: string | null;
   worktree_path: string | null;
+  context_path: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -227,15 +238,186 @@ export interface BridgeCapabilities {
   };
   scheduler: BridgeConfig["scheduler"];
   budgets: { max_tokens: number | null; max_cost_usd: number | null; enforcement: "soft" };
+  provider_paused: {
+    code: string;
+    message: string;
+    at: string;
+  } | null;
   execution: {
     mcp_read_only_default: true;
     writable_supported: boolean;
     isolated_worktree_required: boolean;
     shell_allowed: false;
-    read_isolation: "opencode_permissions_only" | "simulated";
+    read_isolation: "macos_seatbelt" | "opencode_permissions_only" | "simulated";
     write_isolation: "macos_seatbelt" | "unavailable" | "simulated";
+    network: "provider_required" | "none" | "simulated";
+    credential_isolation: "partial" | "simulated";
   };
   limitations: string[];
+}
+
+export interface PreflightInput {
+  repo_root: string;
+  model?: string;
+  read_only: boolean;
+  context_files?: string[];
+}
+
+export interface PreflightResult {
+  adapter: string;
+  simulated: boolean;
+  requested: {
+    repo_root: string;
+    model: string | null;
+    read_only: boolean;
+  };
+  workspace: {
+    kind: "repo_root" | "isolated_worktree" | "context_snapshot";
+    repo_root: string;
+    git_top_level: string | null;
+    base_commit: string | null;
+    path: string | null;
+    planned_worktree_root: string | null;
+    planned_context_root: string | null;
+    worktree_required: boolean;
+    worktree_ready: boolean;
+    main_worktree_dirty: boolean | null;
+    main_worktree_changes: string[];
+  };
+  model: {
+    model: string;
+    provider_id: string;
+    model_id: string;
+    variant: string | null;
+    permitted: true;
+    expensive: boolean;
+    availability: "unverified_until_start";
+  };
+  permissions: {
+    read: boolean;
+    glob: boolean;
+    grep: boolean;
+    edit: boolean;
+    write: boolean;
+    patch: boolean;
+    shell: false;
+    external_directories: false;
+    web: false;
+    subagent: false;
+    question: false;
+  };
+  isolation: BridgeCapabilities["execution"];
+  budgets: {
+    max_tokens: number | null;
+    max_cost_usd: number | null;
+    enforcement: "soft";
+    hard_limits: string[];
+    soft_limits: string[];
+  };
+  timeout_seconds: {
+    default: number;
+    max: number;
+  };
+  context: {
+    enabled: boolean;
+    planned_root: string | null;
+    files: ContextFile[];
+    total_bytes: number;
+    note: string;
+  };
+  unverified: string[];
+  warnings: string[];
+}
+
+export interface DeliveryOptions {
+  task_id: string;
+  max_chars?: number;
+}
+
+export interface DeliveryCommand {
+  command: string | null;
+  exit_code: number | null;
+  source: "shell" | "tool" | "simulated";
+  observed_at: string;
+  verified_by_bridge: false;
+  note?: string;
+}
+
+export interface ReviewFinding {
+  location: string;
+  trigger: string;
+  evidence: string;
+  confidence: "reproduced" | "static-inference" | "needs-confirmation";
+}
+
+export interface DeliveryFindings {
+  verified: boolean;
+  items: ReviewFinding[];
+  note: string;
+}
+
+export interface DeliveryPackage {
+  task_id: string;
+  status: TaskStatus;
+  generated_at: string;
+  task: {
+    task_type: TaskType;
+    repo_root: string;
+    read_only: boolean;
+    root_task_id: string;
+    turn: number;
+    session_id: string | null;
+  };
+  context: {
+    path: string | null;
+    manifest_path: string | null;
+    files: ContextFile[];
+    total_bytes: number;
+    verified: boolean;
+  };
+  model: {
+    requested: string;
+    actual: string | null;
+    provider_id: string;
+    model_id: string;
+    variant: string | null;
+    verified: boolean;
+    simulated: boolean;
+  };
+  git: {
+    available: boolean;
+    reason?: "no_worktree";
+    base_commit: string | null;
+    worktree_path: string | null;
+    status: string;
+    files: Array<{
+      path: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      untracked: boolean;
+    }>;
+    added: string[];
+    modified: string[];
+    deleted: string[];
+    untracked: string[];
+    additions: number;
+    deletions: number;
+    patch: string;
+    patch_truncated: boolean;
+    patch_sha256: string | null;
+  };
+  commands: DeliveryCommand[];
+  verification: {
+    status: "simulated" | "unverified" | "failed";
+    bridge_ran_commands: false;
+    tests_run_by_bridge: false;
+    notes: string[];
+  };
+  findings: DeliveryFindings;
+  usage: TaskUsage;
+  cost: { usd: number | null; known: boolean };
+  unverified: string[];
 }
 
 export interface AbortTaskResult {

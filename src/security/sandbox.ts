@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -6,9 +6,14 @@ import { BridgeError } from "../errors.js";
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
+export type SandboxMode = "read" | "write";
+
 export interface SandboxProfileOptions {
+  /** Read mode denies access to the user home and external mounts by default. */
+  mode?: SandboxMode;
   taskDir: string;
   tempDir: string;
+  /** The directory the worker is allowed to read (and, in write mode, edit). */
   worktreePath: string;
   gitDir?: string;
 }
@@ -17,33 +22,62 @@ export function sandboxAvailable(): boolean {
   return process.platform === "darwin" && existsSync(SANDBOX_EXEC);
 }
 
-export function buildSeatbeltProfile(options: SandboxProfileOptions): string {
+function opencodePaths(): {
+  data: string;
+  state: string;
+  cache: string;
+  config: string;
+} {
   const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share");
   const stateHome = process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
   const cacheHome = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-  const opencodeData = join(dataHome, "opencode");
+  const configHome = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+  return {
+    data: join(dataHome, "opencode"),
+    state: join(stateHome, "opencode"),
+    cache: join(cacheHome, "opencode"),
+    config: join(configHome, "opencode"),
+  };
+}
+
+function readRules(paths: string[]): string {
+  return paths
+    .map((path) => `  (subpath "${escapeSchemeString(canonicalPath(path))}")`)
+    .join("\n");
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Writable profile: broad reads, writes confined to the worktree and task data.
+ * Kept for edit-only OpenCode tasks, whose Git worktree must remain usable.
+ */
+export function buildSeatbeltProfile(options: SandboxProfileOptions): string {
+  const opencode = opencodePaths();
   const writable = [
     options.taskDir,
     options.tempDir,
     options.worktreePath,
     ...(options.gitDir === undefined ? [] : [options.gitDir]),
-    join(opencodeData, "log"),
-    join(opencodeData, "shell"),
-    join(opencodeData, "snapshot"),
-    join(stateHome, "opencode"),
-    join(cacheHome, "opencode"),
+    join(opencode.data, "log"),
+    join(opencode.data, "shell"),
+    join(opencode.data, "snapshot"),
+    opencode.state,
+    opencode.cache,
   ];
-
-  const rules = writable
-    .map((path) => `  (subpath "${escapeSchemeString(path)}")`)
-    .join("\n");
 
   return `(version 1)
 (deny default)
 (allow process*)
 (allow file-read*)
 (allow file-write*
-${rules}
+${readRules(writable)}
   (literal "/dev/null"))
 (allow sysctl-read)
 (allow mach-lookup)
@@ -53,6 +87,62 @@ ${rules}
 `;
 }
 
+/**
+ * Read-only profile: allows the runtime to start, but hides the user home,
+ * external mounts, and system temp outside the task area. Deny rules are used
+ * because macOS 26 rejects narrow file-read allow lists. Network remains
+ * available for the model provider; worker web/shell tools are denied by the
+ * OpenCode permission layer.
+ */
+export function buildReadSeatbeltProfile(options: SandboxProfileOptions): string {
+  const opencode = opencodePaths();
+  const readable = [
+    options.taskDir,
+    options.tempDir,
+    options.worktreePath,
+    opencode.data,
+    opencode.state,
+    opencode.cache,
+    opencode.config,
+  ];
+  const writable = [
+    options.taskDir,
+    options.tempDir,
+    opencode.data,
+    opencode.state,
+    opencode.cache,
+  ];
+
+  return `(version 1)
+(deny default)
+(allow process*)
+(allow file-read*)
+(deny file-read-data (subpath "${escapeSchemeString(homedir())}"))
+(deny file-read-data (subpath "/Users"))
+(deny file-read-data (subpath "/Volumes"))
+(deny file-read-data (subpath "/Network"))
+(deny file-read-data (subpath "/private/tmp"))
+(deny file-read-data (subpath "/tmp"))
+(deny file-read-data (subpath "/private/var/folders"))
+(deny file-read-data (subpath "/Library/Keychains"))
+(allow file-read-data
+${readRules(readable)})
+(allow file-write*
+${readRules(writable)})
+(allow sysctl-read)
+(allow mach-lookup)
+(allow network*)
+(allow signal)
+(allow ipc-posix*)
+`;
+}
+
+export function buildSandboxProfile(options: SandboxProfileOptions): string {
+  return (options.mode ?? "write") === "read"
+    ? buildReadSeatbeltProfile(options)
+    : buildSeatbeltProfile(options);
+}
+
 export async function writeSeatbeltProfile(options: SandboxProfileOptions): Promise<string> {
   if (!sandboxAvailable()) {
     throw new BridgeError("SANDBOX_UNAVAILABLE", "macOS sandbox-exec is not available");
@@ -60,7 +150,7 @@ export async function writeSeatbeltProfile(options: SandboxProfileOptions): Prom
   await mkdir(options.taskDir, { recursive: true, mode: 0o700 });
   await mkdir(options.tempDir, { recursive: true, mode: 0o700 });
   const profilePath = join(options.taskDir, "sandbox.sb");
-  await writeFile(profilePath, buildSeatbeltProfile(options), { mode: 0o600 });
+  await writeFile(profilePath, buildSandboxProfile(options), { mode: 0o600 });
   return profilePath;
 }
 

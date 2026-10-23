@@ -73,6 +73,7 @@ function config(tempDir: string): BridgeConfig {
       allowed_repo_roots: [tempDir],
       require_git_for_writes: true,
       allow_external_directories: false,
+      read_sandbox: "auto",
     },
     opencode: {
       binary: "opencode",
@@ -113,6 +114,15 @@ describe("TaskManager worktree integration", () => {
       expect(diff.available).toBe(true);
       expect(diff.untracked).toContain("new-file.txt");
       expect(diff.patch).toContain("hello from adapter");
+
+      const delivery = await services.service.delivery({ task_id: spawned.task.task_id });
+      expect(delivery.git.available).toBe(true);
+      expect(delivery.git.base_commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(delivery.git.patch).toContain("hello from adapter");
+      expect(delivery.git.patch_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(delivery.verification.status).toBe("unverified");
+      expect(delivery.verification.bridge_ran_commands).toBe(false);
+      expect(delivery.git.files.some((file) => file.path === "new-file.txt")).toBe(true);
 
       const history = services.manager.history(spawned.task.task_id, { limit: 100 });
       const types = history.events.map((event) => event.event_type);
