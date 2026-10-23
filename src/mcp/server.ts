@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { createAdapter, createServices, type BridgeServices } from "../app.js";
+import { createAdapter, createServices } from "../app.js";
 import type { ToolServices } from "../core/task-service.js";
-import { loadConfig, type BridgeConfig } from "../config.js";
+import { ensureDaemon } from "../daemon/ensure.js";
+import { defaultConfigPath, loadConfig, type BridgeConfig } from "../config.js";
 import { toErrorPayload } from "../errors.js";
 import { createLogger, type Logger } from "../logging.js";
 import { registerAgentTools } from "./tools.js";
@@ -35,47 +36,63 @@ export function createMcpServer(services: ToolServices): McpServer {
   return server;
 }
 
-function shutdown(
-  logger: Logger,
-  services: BridgeServices,
-  handle: { close(): Promise<void> },
-  signal: string,
-): void {
-  logger.info({ signal }, "shutting down");
-  void services.manager
-    .shutdown()
-    .catch((error: unknown) => {
-      logger.error({ error: toErrorPayload(error) }, "task manager shutdown failed");
-    })
-    .finally(() => handle.close())
-    .catch((error: unknown) => {
-      logger.error({ error: toErrorPayload(error) }, "MCP close failed");
-      process.exitCode = 1;
-    });
-}
-
-function main(): void {
-  const config = loadConfig();
+async function main(): Promise<void> {
+  const configPath = process.env.BRIDGE_CONFIG ?? defaultConfigPath();
+  const config = loadConfig({ path: configPath });
   const logger = createLogger(config.log_level);
-  const adapter = createAdapter(config, logger);
-  const services = createServices(config, adapter, logger);
+  const inProcess = process.env.BRIDGE_INPROCESS === "1";
 
-  const handle = serveStdio(() => createMcpServer(services), {
+  let service: ToolServices["service"];
+  let mode: "inprocess" | "daemon";
+  let cleanup: () => Promise<void>;
+
+  if (inProcess) {
+    const adapter = createAdapter(config, logger);
+    const services = createServices(config, adapter, logger);
+    service = services.service;
+    mode = "inprocess";
+    cleanup = async () => {
+      await services.manager.shutdown();
+    };
+  } else {
+    const client = await ensureDaemon({ config, configPath, logger });
+    service = client;
+    mode = "daemon";
+    cleanup = async () => {
+      client.close();
+    };
+  }
+
+  const handle = serveStdio(() => createMcpServer({ config, service }), {
     onerror: (error) => logger.error({ error: toErrorPayload(error) }, "MCP transport error"),
   });
 
-  process.once("SIGINT", () => shutdown(logger, services, handle, "SIGINT"));
-  process.once("SIGTERM", () => shutdown(logger, services, handle, "SIGTERM"));
+  let closing = false;
+  const shutdown = (signal: string) => {
+    if (closing) return;
+    closing = true;
+    logger.info({ signal, mode }, "MCP server shutting down");
+    void cleanup()
+      .catch((error: unknown) => {
+        logger.error({ error: toErrorPayload(error) }, "bridge cleanup failed");
+      })
+      .finally(() => handle.close())
+      .catch((error: unknown) => {
+        logger.error({ error: toErrorPayload(error) }, "MCP close failed");
+        process.exitCode = 1;
+      });
+  };
+
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
 
   logger.info(
-    { adapter: adapter.name, version: SERVER_VERSION, log_level: config.log_level },
+    { mode, version: SERVER_VERSION, log_level: config.log_level },
     "MCP server listening on stdio",
   );
 }
 
-try {
-  main();
-} catch (error) {
+void main().catch((error: unknown) => {
   process.stderr.write(
     `${JSON.stringify({
       ok: false,
@@ -84,4 +101,4 @@ try {
     })}\n`,
   );
   process.exitCode = 1;
-}
+});

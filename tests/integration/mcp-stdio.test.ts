@@ -47,6 +47,7 @@ async function startMcp(configPath: string, scenario: string): Promise<McpHandle
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
       BRIDGE_CONFIG: configPath,
+      BRIDGE_INPROCESS: "1",
       BRIDGE_MOCK_SCENARIO: scenario,
       BRIDGE_MOCK_DELAY_MS: "5",
     },
