@@ -136,3 +136,19 @@ Status: accepted for Phase 1
   MCP exit and is not the default.
 - Model usage is persisted separately from task state. Approvals and cleanup
   records have tables reserved for Phase 5 but no destructive automation yet.
+
+## Phase 5 update
+
+- Token and cost limits are soft, event-driven budgets. When a usage event
+  exceeds a configured limit, the bridge requests cancellation and marks the
+  task failed with `BUDGET_EXCEEDED`. Cost limits only apply when cost is known.
+- Cleanup is conservative. `agent_cleanup` defaults to a dry-run plan. Clean
+  worktrees can be removed automatically; dirty worktrees produce a persistent
+  approval record and are never removed by MCP.
+- The only approval channel is the local `bridge approve <id>` CLI, which talks
+  to the daemon over the user-only Unix socket. Before force-removal, the
+  worktree patch is saved under `data_dir/approvals/`.
+- Old `opencode-*.log` files are removed by retention policy; `daemon.log` is
+  preserved. Cleanup actions are written to `cleanup_records`.
+- The CLI also provides `bridge cleanup`, `bridge daemon status`, and
+  `bridge daemon stop`. Full task inspection/log-follow CLI remains Phase 6.

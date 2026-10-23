@@ -15,6 +15,10 @@
     "max_cost_usd": null,
     "max_tokens": null
   },
+  "cleanup": {
+    "log_retention_days": 30,
+    "worktree_retention_days": 30
+  },
   "security": {
     "allowed_repo_roots": ["/Users/you/Code"],
     "require_git_for_writes": true,

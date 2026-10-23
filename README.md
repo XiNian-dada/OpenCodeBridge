@@ -3,15 +3,15 @@
 An MCP bridge that lets Codex delegate bounded coding tasks to OpenCode while
 keeping task state, prompts, events, and cancellation under bridge control.
 
-> **Phase 4 status:** SQLite persistence, an auto-started local daemon, Unix-socket
-> IPC, and restart recovery are implemented. Tasks survive MCP adapter restarts.
-> A daemon restart marks unfinished tasks interrupted instead of re-running them.
-> Automatic cleanup and the CLI remain future work.
+> **Phase 5 status:** token/cost budgets, cleanup planning, safe worktree/log
+> cleanup, independent CLI approval for destructive cleanup, and log retention are
+> implemented. Destructive worktree deletion cannot be authorized by an MCP call.
+> The full task-inspection CLI and dashboard remain future work.
 
 ## What works now
 
 - MCP stdio server (`@modelcontextprotocol/server` v2)
-- Seven tools: `agent_spawn`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_abort`, `agent_list`
+- Eight tools: `agent_spawn`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_abort`, `agent_list`, `agent_cleanup`
 - FIFO queue with configurable concurrency and queue limits
 - Explicit task state machine with verified cancellation
 - Idempotency keys
@@ -36,6 +36,11 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Auto-started local daemon over a private Unix socket
 - Task survival across MCP adapter restarts
 - Safe restart recovery: unfinished tasks become `interrupted`, never re-run
+- Token/cost budget enforcement with `BUDGET_EXCEEDED`
+- Cleanup planning for worktrees and logs
+- Persistent approval records for dirty-worktree deletion
+- Independent local CLI approval channel (`bridge approve <id>`)
+- Log retention and safe clean-worktree removal
 
 ## Requirements
 
@@ -282,7 +287,35 @@ Mock events are explicitly mock-labelled. Real OpenCode events are obtained from
 the session API and SSE stream; no execution summary is synthesized as if it
 were a tool record.
 
-## Security boundaries in Phase 4
+## Budgets and cleanup
+
+`models.max_tokens` and `models.max_cost_usd` are soft budgets. Usage events are
+checked while a task runs; exceeding a limit requests cancellation and records
+`BUDGET_EXCEEDED`. Cost enforcement requires the provider to report a known cost.
+
+`agent_cleanup` plans cleanup by default (`dry_run: true`). With `dry_run: false`
+it:
+
+- removes **clean** worktrees for completed tasks, subject to
+  `cleanup.worktree_retention_days` unless task IDs are explicitly supplied
+- deletes `logs/opencode-*.log` older than `cleanup.log_retention_days`
+- creates a persistent approval for any **dirty** worktree instead of deleting it
+
+Approvals are executed only through the local CLI:
+
+```bash
+bridge cleanup                 # dry-run plan
+bridge cleanup --apply         # safe cleanup; dirty worktrees become approvals
+bridge approve <approval-id>   # user-only destructive action
+bridge daemon status
+bridge daemon stop
+```
+
+Before an approved dirty worktree is force-removed, the bridge saves its patch
+under `data_dir/approvals/<approval-id>.patch`. An MCP tool call alone can never
+consume an approval.
+
+## Security boundaries in Phase 5
 
 - Only paths under `security.allowed_repo_roots` are accepted.
 - Writable OpenCode tasks are enabled only on macOS with `sandbox-exec`.
@@ -303,6 +336,8 @@ were a tool record.
   environments. This is not a substitute for a filesystem sandbox.
 - The daemon socket is accessible only to the current user through directory and
   socket permissions (`0700` / `0600`).
+- Dirty worktrees require an approval created by the daemon and consumed by the
+  local `bridge approve` CLI, not by Codex.
 - MCP logs go to stderr. stdout is reserved for the JSON-RPC protocol.
 
 **Known limitations:** the Seatbelt profile confines writes but still allows
@@ -320,12 +355,13 @@ OpenCode turn; those tasks are marked interrupted and preserved for review.
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-The default suite has 82 passing tests. It covers state transitions, queues,
+The default suite has 86 passing tests. It covers state transitions, queues,
 model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
 startup, worktrees, diffs, session continuation, SQLite persistence, daemon
-IPC/reconnect, restart recovery, Seatbelt write confinement, and fake OpenCode
-adapter lifecycles. All default tests are free.
+IPC/reconnect, restart recovery, budgets, cleanup approvals, CLI approval,
+Seatbelt write confinement, and fake OpenCode adapter lifecycles. All default
+tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a
 prompt with `resume: false`):
@@ -345,7 +381,7 @@ the version and models, creates a session, admits a no-reply prompt, and observe
 | 2 | **Done:** real OpenCode adapter, private server, SSE, abort, model discovery, usage readback |
 | 3 | **Done:** Git worktrees, diff inspection, macOS Seatbelt write confinement, edit-only writable tasks |
 | 4 | **Done:** SQLite, daemon, Unix socket IPC, queue persistence, restart recovery, usage records |
-| 5 | Budget enforcement, log redaction hardening, cleanup plans, independent user approval |
+| 5 | **Done:** budgets, log retention, cleanup plans, independent CLI approval for dirty worktrees |
 | 6 | CLI (`bridge tasks/status/logs/diff`), live log follow, install/uninstall docs, end-to-end acceptance scripts |
 
 See `docs/decisions.md` for technical decisions and
