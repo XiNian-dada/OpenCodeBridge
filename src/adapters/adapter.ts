@@ -12,6 +12,7 @@ export interface AdapterSession {
   model: string;
   provider_id: string;
   worktree_path: string | null;
+  server_pid?: number | null;
 }
 
 export interface AdapterEventInput {

@@ -281,6 +281,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         model: task.model,
         provider_id: task.provider_id,
         worktree_path: task.worktree_path,
+        server_pid: server.pid,
       });
 
       const eventsPromise = this.consumeEvents(run, context);

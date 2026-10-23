@@ -32,6 +32,7 @@ function task(repoRoot: string, baseCommit: string | null, id = "task_worktree_t
     status: "preparing",
     stage: "preparing",
     session_id: null,
+    server_pid: null,
     worktree_path: null,
     worktree_git_dir: null,
     base_commit: baseCommit,
