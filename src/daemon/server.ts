@@ -64,6 +64,8 @@ export class IpcServer {
   }
 
   private accept(socket: Socket): void {
+    const controller = new AbortController();
+    socket.once("close", () => controller.abort());
     this.clients.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -83,27 +85,32 @@ export class IpcServer {
         buffer = buffer.slice(newline + 1);
         bytes = Buffer.byteLength(buffer);
         if (line.trim() === "") continue;
-        void this.handleLine(socket, line);
+        void this.handleLine(socket, line, controller.signal);
       }
     });
     socket.on("close", () => this.clients.delete(socket));
     socket.on("error", () => this.clients.delete(socket));
   }
 
-  private async handleLine(socket: Socket, line: string): Promise<void> {
+  private async handleLine(socket: Socket, line: string, signal: AbortSignal): Promise<void> {
     let id = "unknown";
     try {
       const request = IpcRequestSchema.parse(JSON.parse(line));
       id = request.id;
-      const result = await this.dispatch(request.method, request.params);
+      const result = await this.dispatch(request.method, request.params, signal);
       this.write(socket, { id, ok: true, result });
     } catch (error) {
       this.write(socket, { id, ok: false, error: toErrorPayload(error) });
     }
   }
 
-  private async dispatch(method: string, params: unknown): Promise<unknown> {
+  private async dispatch(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
     switch (method) {
+      case "capabilities":
+        parseParams(IpcParams.capabilities, params);
+        return this.options.service.capabilities();
+      case "wait":
+        return this.options.service.wait(parseParams(IpcParams.wait, params), signal);
       case "spawn":
         return this.options.service.spawn(parseParams(IpcParams.spawn, params));
       case "status":

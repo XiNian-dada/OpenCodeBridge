@@ -103,6 +103,8 @@ describe("MCP stdio server with mock adapter", () => {
       expect(names).toEqual(
         expect.arrayContaining([
           "agent_spawn",
+          "agent_capabilities",
+          "agent_wait",
           "agent_status",
           "agent_history",
           "agent_message",
@@ -112,6 +114,10 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_list",
         ]),
       );
+
+      const capabilities = await callTool(mcp.client, "agent_capabilities", {});
+      expect(capabilities.isError).toBe(false);
+      expect(capabilities.json.capabilities).toMatchObject({ adapter: "mock", simulated: true });
 
       const spawnArgs = {
         ...spawnInput(harness.repoRoot),
@@ -128,7 +134,10 @@ describe("MCP stdio server with mock adapter", () => {
       expect(duplicate.json.deduplicated).toBe(true);
       expect((duplicate.json.task as Record<string, unknown>).task_id).toBe(taskId);
 
-      const completed = await waitForTaskStatus(mcp.client, taskId, ["completed"]);
+      const waited = await callTool(mcp.client, "agent_wait", { task_ids: [taskId], timeout_seconds: 3 });
+      expect(waited.isError).toBe(false);
+      expect(waited.json.ready_task_ids).toEqual([taskId]);
+      const completed = (waited.json.tasks as Array<Record<string, unknown>>)[0]!;
       expect(completed.status).toBe("completed");
       expect(completed.session_id).toMatch(/^mock_sess_/);
 
@@ -180,6 +189,26 @@ describe("MCP stdio server with mock adapter", () => {
       });
       expect(rejected.isError).toBe(true);
       expect((rejected.json.error as Record<string, unknown>).code).toBe("MODEL_NOT_ALLOWED");
+    } finally {
+      if (mcp !== null) await mcp.close();
+      await closeHarness(harness);
+    }
+  });
+
+  it("defaults omitted read_only to true and validates wait input", async () => {
+    const harness = await createHarness();
+    let mcp: McpHandle | null = null;
+    try {
+      mcp = await startMcp(harness.configPath, "success");
+      const spawned = await callTool(mcp.client, "agent_spawn", {
+        task: "Inspect README only", repo_root: harness.repoRoot,
+      });
+      expect(spawned.isError).toBe(false);
+      expect(spawned.json.task).toMatchObject({ read_only: true, worktree_path: null });
+      const invalid = await mcp.client.callTool({
+        name: "agent_wait", arguments: { task_ids: [], timeout_seconds: 100 },
+      });
+      expect(invalid.isError).toBe(true);
     } finally {
       if (mcp !== null) await mcp.close();
       await closeHarness(harness);

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BridgeConfig } from "../config.js";
@@ -28,6 +29,9 @@ import type {
   TaskStatus,
   TaskUsage,
   TaskView,
+  BridgeCapabilities,
+  WaitTasksInput,
+  WaitTasksResult,
 } from "../types.js";
 import { emptyUsage } from "../types.js";
 import type {
@@ -79,6 +83,78 @@ export class TaskManager {
     this.idFactory = options.idFactory ?? (() => `task_${randomUUID()}`);
     this.store = options.store;
     if (this.store !== undefined) this.recoverFromStore();
+  }
+
+  capabilities(): BridgeCapabilities {
+    const { config, adapter, modelPolicy } = this.options;
+    const simulated = adapter.name === "mock";
+    return {
+      adapter: adapter.name,
+      simulated,
+      models: {
+        default: config.models.default,
+        allowed: config.models.allow.map((model) => {
+          try {
+            modelPolicy.resolve(model);
+            return { model, permitted: true, error_code: null };
+          } catch (error) {
+            return { model, permitted: false, error_code: toErrorPayload(error).code };
+          }
+        }),
+        availability: "validated_at_task_start",
+        automatic_fallback: false,
+      },
+      scheduler: { ...config.scheduler },
+      budgets: {
+        max_tokens: config.models.max_tokens,
+        max_cost_usd: config.models.max_cost_usd,
+        enforcement: "soft",
+      },
+      execution: {
+        mcp_read_only_default: true,
+        writable_supported: adapter.supportsWrites,
+        isolated_worktree_required: adapter.requiresIsolatedWorktree,
+        shell_allowed: false,
+        read_isolation: simulated ? "simulated" : "opencode_permissions_only",
+        write_isolation: simulated ? "simulated" : adapter.supportsWrites ? "macos_seatbelt" : "unavailable",
+      },
+      limitations: simulated
+        ? ["Mock results and tool events are simulated; no real model or code execution."]
+        : [
+            "Model IDs are configured policy entries, not a live provider availability or quota check.",
+            "Read access is not confined by an OS sandbox; per-file delegation scope is not enforced.",
+            "Writable tasks are edit-only; Codex must run tests and review and integrate the diff.",
+            "Internal OpenCode model calls are not independently verified by this capability query.",
+            "Budgets are soft; unknown provider cost cannot be enforced as a hard spending cap.",
+          ],
+    };
+  }
+
+  async wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult> {
+    if (input.task_ids.length < 1 || input.task_ids.length > 8 ||
+        !Number.isInteger(input.timeout_seconds) || input.timeout_seconds < 0 || input.timeout_seconds > 50) {
+      throw new BridgeError("INVALID_ARGUMENT", "wait requires 1-8 task IDs and a timeout of 0-50 seconds");
+    }
+    const ids = [...new Set(input.task_ids)];
+    // Validate every ID before waiting, including when another target is already ready.
+    ids.forEach((id) => this.requireTask(id));
+    const started = performance.now();
+    const timeoutMs = input.timeout_seconds * 1000;
+    while (true) {
+      signal?.throwIfAborted();
+      const tasks = ids.map((id) => this.status(id));
+      const ready = tasks.filter((task) => isTerminal(task.status) || task.status === "waiting_permission");
+      const elapsed = performance.now() - started;
+      if (ready.length > 0 || elapsed >= timeoutMs) {
+        return {
+          tasks,
+          ready_task_ids: ready.map((task) => task.task_id),
+          timed_out: ready.length === 0,
+          waited_ms: Math.round(elapsed),
+        };
+      }
+      await delay(Math.min(100, timeoutMs - elapsed), undefined, { signal });
+    }
   }
 
   async spawn(input: SpawnTaskInput): Promise<SpawnResult> {

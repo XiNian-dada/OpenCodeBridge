@@ -69,6 +69,10 @@ describe("MCP server over daemon", () => {
     try {
       daemon = await ensureDaemon({ config, configPath, logger: createLogger("silent") });
       mcp = await startMcp(configPath);
+      const capabilities = await mcp.client.callTool({ name: "agent_capabilities", arguments: {} });
+      expect(capabilities.structuredContent).toMatchObject({
+        ok: true, capabilities: { adapter: "mock", simulated: true },
+      });
       const spawned = await mcp.client.callTool({
         name: "agent_spawn",
         arguments: {
@@ -83,7 +87,10 @@ describe("MCP server over daemon", () => {
       const task = (spawned as { structuredContent?: { task?: Record<string, unknown> } })
         .structuredContent?.task;
       const taskId = String(task?.task_id);
-      await waitForStatus(mcp.client, taskId, "completed");
+      const waited = await mcp.client.callTool({
+        name: "agent_wait", arguments: { task_ids: [taskId], timeout_seconds: 3 },
+      });
+      expect(waited.structuredContent).toMatchObject({ ready_task_ids: [taskId], timed_out: false });
       await mcp.close();
       mcp = null;
 

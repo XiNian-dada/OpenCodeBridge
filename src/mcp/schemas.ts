@@ -24,7 +24,7 @@ export const AgentSpawnInput = z
       .min(1)
       .optional()
       .describe("Optional model in provider/model form; must be in the configured allowlist"),
-    read_only: z.boolean().default(false).describe("When true, the task must not modify files"),
+    read_only: z.boolean().default(true).describe("Defaults to read-only; explicitly set false only for an authorized isolated edit task"),
     timeout_seconds: z
       .number()
       .int()
@@ -42,6 +42,14 @@ export const AgentSpawnInput = z
   .strict();
 
 export const AgentStatusInput = z.object({ task_id: taskId }).strict();
+
+export const AgentCapabilitiesInput = z.object({}).strict();
+
+export const AgentWaitInput = z.object({
+  task_ids: z.array(taskId).min(1).max(8).describe("Tasks to wait on; returns when any is terminal or needs permission"),
+  timeout_seconds: z.number().int().min(0).max(50).default(30)
+    .describe("Maximum wait, independent of task execution timeout; 0 returns immediately"),
+}).strict();
 
 export const AgentHistoryInput = z
   .object({

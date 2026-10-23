@@ -1,3 +1,5 @@
+import type { BridgeConfig } from "./config.js";
+
 export const TASK_STATUSES = [
   "queued",
   "preparing",
@@ -194,6 +196,40 @@ export interface TaskListFilter {
 export interface SpawnResult {
   task: TaskView;
   deduplicated: boolean;
+}
+
+export interface WaitTasksInput {
+  task_ids: string[];
+  timeout_seconds: number;
+}
+
+export interface WaitTasksResult {
+  tasks: TaskView[];
+  ready_task_ids: string[];
+  timed_out: boolean;
+  waited_ms: number;
+}
+
+export interface BridgeCapabilities {
+  adapter: string;
+  simulated: boolean;
+  models: {
+    default: string | null;
+    allowed: Array<{ model: string; permitted: boolean; error_code: string | null }>;
+    availability: "validated_at_task_start";
+    automatic_fallback: false;
+  };
+  scheduler: BridgeConfig["scheduler"];
+  budgets: { max_tokens: number | null; max_cost_usd: number | null; enforcement: "soft" };
+  execution: {
+    mcp_read_only_default: true;
+    writable_supported: boolean;
+    isolated_worktree_required: boolean;
+    shell_allowed: false;
+    read_isolation: "opencode_permissions_only" | "simulated";
+    write_isolation: "macos_seatbelt" | "unavailable" | "simulated";
+  };
+  limitations: string[];
 }
 
 export interface AbortTaskResult {

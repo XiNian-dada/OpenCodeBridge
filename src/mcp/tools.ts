@@ -11,6 +11,8 @@ import {
   AgentMessageInput,
   AgentSpawnInput,
   AgentStatusInput,
+  AgentCapabilitiesInput,
+  AgentWaitInput,
 } from "./schemas.js";
 
 type ToolResult = {
@@ -43,11 +45,45 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
   const { service, config } = services;
 
   server.registerTool(
+    "agent_capabilities",
+    {
+      title: "Inspect delegation capabilities",
+      description: "Read configured model policy, scheduler limits, budgets and actual isolation limitations before delegating. Does not call a model or verify provider quotas.",
+      inputSchema: AgentCapabilitiesInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async () => {
+      try {
+        return success({ ok: true, capabilities: await service.capabilities() });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "agent_wait",
+    {
+      title: "Wait for delegated tasks",
+      description: "Wait up to 50 seconds for any of 1-8 tasks to finish or need permission. Returns current snapshots on timeout without cancelling tasks or invoking a model. Prefer this over repeated agent_status polling. Remove ready IDs before waiting again.",
+      inputSchema: AgentWaitInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (input, extra) => {
+      try {
+        return success({ ok: true, ...await service.wait(input, extra.mcpReq.signal) });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "agent_spawn",
     {
       title: "Spawn an OpenCode task",
       description:
-        "Create and enqueue an asynchronous coding task. Returns a task ID immediately; poll agent_status for progress.",
+        "Delegate clear, bounded work asynchronously. Inspect agent_capabilities first. Defaults to read-only; returns immediately. Use agent_wait for completion. Codex handles complex decisions and final review; worker cannot run tests or shell commands.",
       inputSchema: AgentSpawnInput,
       annotations: {
         readOnlyHint: false,

@@ -11,6 +11,9 @@ import type {
   TaskView,
   CleanupOptions,
   CleanupResult,
+  BridgeCapabilities,
+  WaitTasksInput,
+  WaitTasksResult,
 } from "../types.js";
 import type { TaskManager } from "./task-manager.js";
 
@@ -29,6 +32,8 @@ export interface ToolServices {
 }
 
 export interface TaskService {
+  capabilities(): Promise<BridgeCapabilities>;
+  wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult>;
   spawn(input: SpawnTaskInput): Promise<SpawnResult>;
   status(taskId: string): Promise<TaskView>;
   history(taskId: string, query: HistoryQuery): Promise<TaskHistoryResult>;
@@ -45,6 +50,14 @@ export interface TaskService {
 
 export class LocalTaskService implements TaskService {
   constructor(private readonly manager: TaskManager) {}
+
+  async capabilities(): Promise<BridgeCapabilities> {
+    return this.manager.capabilities();
+  }
+
+  wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult> {
+    return this.manager.wait(input, signal);
+  }
 
   spawn(input: SpawnTaskInput): Promise<SpawnResult> {
     return this.manager.spawn(input);

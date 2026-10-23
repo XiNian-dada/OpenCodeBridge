@@ -21,13 +21,17 @@ describe("daemon IPC", () => {
       expect((await stat(socketPath)).mode & 0o777).toBe(0o600);
 
       client = await IpcTaskClient.connect(socketPath);
+      expect((await client.capabilities()).models.default).toBe("mock/echo");
       const spawned = await client.spawn({
         ...spawnInput(harness.repoRoot),
         read_only: true,
       });
       expect(spawned.task.status).toMatch(/queued|preparing|running/);
 
-      const completed = await waitForStatus(client, spawned.task.task_id, "completed");
+      const waited = await client.wait({ task_ids: [spawned.task.task_id], timeout_seconds: 3 });
+      expect(waited.ready_task_ids).toEqual([spawned.task.task_id]);
+      const completed = waited.tasks[0]!;
+      expect(completed.status).toBe("completed");
       expect(completed.session_id).toMatch(/^mock_sess_/);
 
       const history = await client.history(spawned.task.task_id, { limit: 50 });

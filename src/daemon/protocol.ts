@@ -3,6 +3,8 @@ import { BridgeError, type ErrorPayload } from "../errors.js";
 import { TASK_STATUSES, TASK_TYPES } from "../types.js";
 
 export const IPC_METHODS = [
+  "capabilities",
+  "wait",
   "spawn",
   "status",
   "history",
@@ -54,6 +56,10 @@ const SpawnParams = z
   .strict();
 
 const StatusParams = z.object({ task_id: z.string().min(1) }).strict();
+const WaitParams = z.object({
+  task_ids: z.array(z.string().min(1)).min(1).max(8),
+  timeout_seconds: z.number().int().min(0).max(50),
+}).strict();
 const MessageParams = z
   .object({ task_id: z.string().min(1), message: z.string().min(1).max(100_000) })
   .strict();
@@ -104,6 +110,8 @@ export function parseParams<T>(schema: z.ZodType<T>, value: unknown): T {
 }
 
 export const IpcParams = {
+  capabilities: z.object({}).strict(),
+  wait: WaitParams,
   spawn: SpawnParams,
   status: StatusParams,
   message: MessageParams,
