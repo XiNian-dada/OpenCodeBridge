@@ -14,6 +14,7 @@ import type {
   BridgeCapabilities,
   WaitTasksInput,
   WaitTasksResult,
+  TaskViewerInfo,
 } from "../types.js";
 import type { TaskDiffResult, TaskHistoryResult, TaskService } from "../core/task-service.js";
 import type { IpcResponse } from "./protocol.js";
@@ -62,6 +63,10 @@ export class IpcTaskClient implements TaskService {
         );
       });
     });
+  }
+
+  viewer(): Promise<TaskViewerInfo> {
+    return this.request("viewer", {});
   }
 
   capabilities(): Promise<BridgeCapabilities> {

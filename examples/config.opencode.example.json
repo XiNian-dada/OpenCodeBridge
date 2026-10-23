@@ -1,6 +1,7 @@
 {
   "adapter": "opencode",
   "log_level": "info",
+  "viewer": { "enabled": true, "auto_open": true },
   "scheduler": {
     "max_concurrent": 2,
     "max_queue": 10,

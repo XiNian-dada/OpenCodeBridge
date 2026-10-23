@@ -78,6 +78,12 @@ describe("bridge daemon", () => {
       client = await IpcTaskClient.connect(paths.socketPath);
       const reloaded = await client.status(spawned.task.task_id);
       expect(reloaded.status).toBe("completed");
+      const viewer = await client.viewer();
+      expect(viewer.auto_open).toBe(false);
+      const viewerUrl = new URL(viewer.url!);
+      const viewerHeaders = { authorization: `Bearer ${new URLSearchParams(viewerUrl.hash.slice(1)).get("key")}` };
+      const viewerTasks = await (await fetch(`${viewerUrl.origin}/api/tasks`, { headers: viewerHeaders })).json() as { tasks: Array<{ task_id: string }> };
+      expect(viewerTasks.tasks[0]?.task_id).toBe(spawned.task.task_id);
       const history = await client.history(spawned.task.task_id, { limit: 100 });
       expect(history.events.map((event) => event.event_type)).toContain("task.completed");
 

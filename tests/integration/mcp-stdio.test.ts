@@ -105,6 +105,7 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_spawn",
           "agent_capabilities",
           "agent_wait",
+          "agent_viewer",
           "agent_status",
           "agent_history",
           "agent_message",
@@ -118,6 +119,7 @@ describe("MCP stdio server with mock adapter", () => {
       const capabilities = await callTool(mcp.client, "agent_capabilities", {});
       expect(capabilities.isError).toBe(false);
       expect(capabilities.json.capabilities).toMatchObject({ adapter: "mock", simulated: true });
+      expect((await callTool(mcp.client, "agent_viewer", {})).json.viewer).toEqual({ url: null, auto_open: false });
 
       const spawnArgs = {
         ...spawnInput(harness.repoRoot),

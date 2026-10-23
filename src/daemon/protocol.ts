@@ -3,6 +3,7 @@ import { BridgeError, type ErrorPayload } from "../errors.js";
 import { TASK_STATUSES, TASK_TYPES } from "../types.js";
 
 export const IPC_METHODS = [
+  "viewer",
   "capabilities",
   "wait",
   "spawn",
@@ -110,6 +111,7 @@ export function parseParams<T>(schema: z.ZodType<T>, value: unknown): T {
 }
 
 export const IpcParams = {
+  viewer: z.object({}).strict(),
   capabilities: z.object({}).strict(),
   wait: WaitParams,
   spawn: SpawnParams,

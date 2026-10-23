@@ -6,12 +6,14 @@ keeping task state, prompts, events, and cancellation under bridge control.
 > **Phase 6 status:** the task-inspection CLI (`tasks`, `status`, `logs --follow`,
 > `diff`), install/uninstall documentation, and an end-to-end acceptance script
 > are implemented. Budgets, cleanup, approvals, daemon persistence, and restart
-> recovery are in place. A web dashboard is not part of this phase.
+> recovery are in place. An automatic read-only local conversation viewer is
+> now included alongside the CLI.
 
 ## What works now
 
 - MCP stdio server (`@modelcontextprotocol/server` v2)
-- Ten tools: `agent_capabilities`, `agent_spawn`, `agent_wait`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_abort`, `agent_list`, `agent_cleanup`
+- Eleven tools: `agent_viewer`, `agent_capabilities`, `agent_spawn`, `agent_wait`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_abort`, `agent_list`, `agent_cleanup`
+- Automatic local live viewer for delegated tasks, exact recorded prompts, replies, and tool calls
 - Policy/isolation discovery without a model call, bounded batch waiting, and compact task snapshots
 - FIFO queue with configurable concurrency and queue limits
 - Explicit task state machine with verified cancellation
@@ -236,6 +238,48 @@ codex mcp list
 
 ## Tools
 
+### Live conversation viewer / `agent_viewer`
+
+Real OpenCode tasks automatically open a local conversation viewer when they
+are created. The viewer follows new tasks and follow-up turns, shows the latest
+100 tasks, and polls the existing audit records every second (every five seconds
+while its tab is in the background). It displays the delegated instruction,
+actual Bridge prompt, latest assistant reply, tool arguments/results and errors.
+Replies appear after OpenCode's message readback completes; token-by-token reply
+streaming is not implemented. Expand the actual prompt or tool result to inspect
+its recorded content, or enable **全部审计事件** for system events and session
+message readbacks. Existing redaction and truncation limits still apply.
+
+An already-polling viewer follows new tasks without opening duplicate tabs.
+Selecting an older task pauses automatic following; re-enable **自动跟随新任务**
+to follow again. If the tab was closed, the next task reopens it once no viewer
+heartbeat has been received for ten seconds. Automatic opening uses the default
+browser on macOS/Linux. `agent_viewer` returns the private URL without a model
+call; Codex can use `open_in_codex` to place it beside the chat. This is a local
+web viewer, not a native Codex subagent conversation.
+
+```bash
+bridge viewer          # reopen the live viewer; no export needed
+bridge viewer --json   # get its private local URL without opening a browser
+```
+
+The daemon owns the viewer, so it continues updating after an MCP adapter
+disconnect. It binds only to `127.0.0.1` on an ephemeral port and serves no write
+or command endpoints. API requests require a random read-only capability from
+the URL fragment, checked in an Authorization header. Host/Origin checks, a
+same-origin CSP and plain-text rendering protect the log display. Keep its URL
+private. Daemon restart rotates the port/key; use `bridge viewer` to reopen.
+
+Local config controls:
+
+```json
+{ "viewer": { "enabled": true, "auto_open": true } }
+```
+
+`enabled` defaults to true; `auto_open` defaults to true for the real OpenCode
+adapter and false for mocks. Use false for headless hosts. In-process test mode
+does not start a viewer. Opening failures preserve tasks and their audit records.
+
 ### `agent_capabilities`
 
 Call with `{}` before delegating. Reads the **daemon's** effective model policy,
@@ -350,6 +394,7 @@ status fields. `total` is the number returned, not a count of all stored tasks.
 2. agent_list with project/status filters to check for existing work.
 3. agent_spawn for a bounded task worth the handoff cost; use an idempotency key.
 4. agent_wait on the returned task ID(s); continue independent Codex work between waits.
+   The automatically opened viewer shows the task's conversation and tool activity.
 5. agent_history (incremental after sequence) and agent_diff to review actual activity and changes.
 6. Run relevant tests yourself and integrate only reviewed changes.
 7. If needed, agent_message continues the session; wait on its NEW turn task ID.
@@ -382,6 +427,7 @@ Add `--json` for scripting.
 
 ```bash
 bridge tasks --status running --limit 20
+bridge viewer
 bridge tasks --repo /Users/you/Code/example --json
 bridge status <task-id>
 bridge logs <task-id>

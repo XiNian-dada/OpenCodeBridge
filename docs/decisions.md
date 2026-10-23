@@ -201,3 +201,23 @@ Status: accepted for Phase 1
   now orders messages by that timestamp before selecting the latest answer;
   otherwise a follow-up could return an older turn's answer as its summary.
   Fake API fixtures now reproduce this ordering and distinct turn replies.
+
+## Automatic local conversation display
+
+- The daemon now serves a read-only local viewer. Successful task creation and
+  follow-up turns focus their task in the viewer and open the default browser
+  when no viewer is polling. The UI uses forward event cursors, not transcript
+  exports or extra model calls. Browser-opening failures do not fail tasks.
+- The HTTP listener uses an ephemeral loopback port, a per-process random
+  capability in the URL fragment, authenticated API headers, strict Host and
+  Origin checks, no CORS, no-store headers, CSP, and text-only rendering of
+  untrusted messages. There are no HTTP mutation/approval/filesystem endpoints.
+- The interface reads redacted audit events rather than exposing the raw task
+  instruction field. It shows original delegation, actual prompt, assistant
+  response and tool execution separately. Replies use final message readback;
+  per-token streaming is outside this change.
+- `agent_viewer` and `bridge viewer` recover the live URL; spawn/message also
+  return `viewer_url`. Headless users can disable auto-open independently.
+- This is a local viewer usable with the current stdio integration. Optional
+  embedded MCP Apps depend on host support, as described in the
+  [MCP Apps overview](https://apps.extensions.modelcontextprotocol.io/api/documents/overview.html).

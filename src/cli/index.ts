@@ -7,6 +7,7 @@ import { toErrorPayload } from "../errors.js";
 import { createLogger } from "../logging.js";
 import type { BridgeEvent, TaskStatus, TaskView } from "../types.js";
 import { TASK_STATUSES } from "../types.js";
+import { openViewerUrl } from "../viewer/server.js";
 
 interface Parsed {
   command: string | undefined;
@@ -20,6 +21,17 @@ async function main(): Promise<void> {
   const configPath = process.env.BRIDGE_CONFIG ?? defaultConfigPath();
   const config = loadConfig({ path: configPath });
   const logger = createLogger("error");
+
+  if (command === "viewer") {
+    const client = await ensureDaemon({ config, configPath, logger });
+    try {
+      const viewer = await client.viewer();
+      if (viewer.url === null) throw new Error("Viewer is disabled; enable viewer.enabled and restart the daemon");
+      if (!json) await openViewerUrl(viewer.url);
+      print({ ok: true, viewer }, json);
+    } finally { client.close(); }
+    return;
+  }
 
   if (command === "approve") {
     const approvalId = args[0];
@@ -377,6 +389,7 @@ function usage(): string {
     "  tasks [--status <status>] [--repo <path>] [--model <model>] [--limit N]",
     "  status <task-id>",
     "  logs <task-id> [--follow] [--limit N] [--types a,b]",
+    "  viewer [--json]  Open the automatically updating local conversation viewer",
     "  diff <task-id> [--file <path>] [--max-chars N]",
     "  abort <task-id>",
     "  message <task-id> <message>",

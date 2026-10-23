@@ -14,6 +14,10 @@ const RawConfigSchema = z
     adapter: z.enum(["mock", "opencode"]).optional(),
     log_level: LogLevelSchema.optional(),
     data_dir: z.string().optional(),
+    viewer: z.object({
+      enabled: z.boolean().optional(),
+      auto_open: z.boolean().optional(),
+    }).strict().optional(),
     scheduler: z
       .object({
         max_concurrent: z.number().int().min(1).max(10).optional(),
@@ -80,6 +84,7 @@ export interface BridgeConfig {
   adapter: "mock" | "opencode";
   log_level: LogLevel;
   data_dir: string | null;
+  viewer?: { enabled: boolean; auto_open: boolean };
   scheduler: {
     max_concurrent: number;
     max_queue: number;
@@ -239,6 +244,10 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
     adapter: raw.adapter ?? "mock",
     log_level: raw.log_level ?? "info",
     data_dir: dataDir,
+    viewer: {
+      enabled: raw.viewer?.enabled ?? true,
+      auto_open: raw.viewer?.auto_open ?? (raw.adapter === "opencode"),
+    },
     scheduler: {
       max_concurrent: raw.scheduler?.max_concurrent ?? 2,
       max_queue: raw.scheduler?.max_queue ?? 10,

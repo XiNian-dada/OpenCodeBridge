@@ -8,6 +8,7 @@ import { createLogger } from "../logging.js";
 import { openSqliteStore } from "../storage/sqlite-store.js";
 import { IpcServer } from "./server.js";
 import { daemonPaths, removeDaemonState, writeDaemonState } from "./state.js";
+import { TaskViewer } from "../viewer/server.js";
 
 export const DAEMON_VERSION = "0.1.0";
 
@@ -21,6 +22,11 @@ async function main(): Promise<void> {
   const store = openSqliteStore(paths.databasePath);
   const adapter = createAdapter(config, logger);
   const services = createServices(config, adapter, logger, store);
+  const viewer = config.viewer?.enabled === false ? null : new TaskViewer({
+    service: services.service,
+    logger,
+    autoOpen: config.viewer?.auto_open ?? (config.adapter === "opencode"),
+  });
 
   let shuttingDown = false;
   const shutdown = async (reason: string): Promise<void> => {
@@ -30,6 +36,7 @@ async function main(): Promise<void> {
     await server.close().catch((error: unknown) => {
       logger.error({ error: toErrorPayload(error) }, "IPC server close failed");
     });
+    await viewer?.close().catch(() => logger.warn("Viewer close failed"));
     await services.manager.shutdown().catch((error: unknown) => {
       logger.error({ error: toErrorPayload(error) }, "task manager shutdown failed");
     });
@@ -46,9 +53,14 @@ async function main(): Promise<void> {
   });
 
   try {
+    if (viewer !== null) {
+      await viewer.listen();
+      services.service.setViewer(viewer);
+    }
     await server.listen();
   } catch (error) {
     logger.error({ error: toErrorPayload(error) }, "bridge daemon failed to listen");
+    await viewer?.close();
     store.close();
     process.exitCode = 1;
     return;

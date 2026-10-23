@@ -46,6 +46,7 @@ export const AgentSpawnInput = z
 export const AgentStatusInput = z.object({ task_id: taskId, detail: taskDetail }).strict();
 
 export const AgentCapabilitiesInput = z.object({}).strict();
+export const AgentViewerInput = z.object({}).strict();
 
 export const AgentWaitInput = z.object({
   task_ids: z.array(taskId).min(1).max(8).describe("Tasks to wait on; returns when any is terminal or needs permission"),

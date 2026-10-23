@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bridge · 委派记录</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside>
+    <div class="brand"><span class="brand-mark">↔</span><strong>Bridge</strong><span class="live"><i></i> LIVE</span></div>
+    <div class="sidebar-heading">最近任务 <span id="task-count">0</span></div>
+    <nav id="tasks" aria-label="任务列表"></nav>
+    <div class="sidebar-footer">Codex × OpenCode<br><span>只读查看 · 仅在本机运行</span></div>
+  </aside>
+  <main>
+    <header>
+      <div><p class="eyebrow">执行过程，直接可见</p><h1>委派记录</h1></div>
+      <label class="follow"><input id="follow" type="checkbox" checked> 自动跟随新任务</label>
+    </header>
+    <div id="connection" class="connection" role="status">正在连接本机 Bridge…</div>
+    <section id="overview" hidden>
+      <div class="overview-top"><code id="task-id"></code><span id="status" class="status"></span></div>
+      <div class="metrics"><div><span>执行模型</span><strong id="model"></strong></div><div><span>运行时长</span><strong id="duration"></strong></div><div><span>任务轮次</span><strong id="turn"></strong></div></div>
+      <div id="repo" class="repo"></div>
+    </section>
+    <div class="timeline-heading"><h2>对话与工具调用</h2><label><input id="show-system" type="checkbox"> 全部审计事件</label></div>
+    <section id="timeline" aria-label="对话与工具调用" aria-live="polite"><p class="empty">任务开始后，委派说明、回复和工具调用会自动出现在这里。</p></section>
+    <footer><span id="updated">等待记录</span><span>记录沿用日志的脱敏和截断规则</span></footer>
+  </main>
+</body>
+</html>

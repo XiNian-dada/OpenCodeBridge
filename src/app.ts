@@ -16,6 +16,7 @@ import { resolveDataDir } from "./paths.js";
 import type { SqliteStore } from "./storage/sqlite-store.js";
 
 export interface BridgeServices extends ToolServices {
+  service: LocalTaskService;
   adapter: AgentAdapter;
   manager: TaskManager;
   logger: Logger;

@@ -84,6 +84,7 @@ try {
   for (const name of [
     "agent_capabilities",
     "agent_wait",
+    "agent_viewer",
     "agent_spawn",
     "agent_status",
     "agent_history",
@@ -98,6 +99,9 @@ try {
 
   const capabilities = await call("agent_capabilities", {});
   assert(capabilities.json.capabilities?.simulated === true, "mock capabilities not disclosed");
+  const viewer = await call("agent_viewer", {});
+  assert(viewer.json.viewer?.url?.startsWith("http://127.0.0.1:"), "local viewer URL missing");
+  assert(viewer.json.viewer.auto_open === false, "mock acceptance should not open a browser");
 
   const spawned = await call("agent_spawn", {
     task: "Acceptance task: inspect the repository.",
@@ -110,6 +114,7 @@ try {
   assert(spawned.json.ok === true, "spawn failed");
   const taskId = spawned.json.task.task_id;
   assert(spawned.json.task.read_only === true, "spawn should default to read-only");
+  assert(spawned.json.viewer_url === viewer.json.viewer.url, "spawn should expose its automatic viewer");
   const completed = await waitForStatus(taskId, "completed");
   assert(completed.session_id, "missing session ID");
 

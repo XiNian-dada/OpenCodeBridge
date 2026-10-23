@@ -13,6 +13,7 @@ import {
   AgentStatusInput,
   AgentCapabilitiesInput,
   AgentWaitInput,
+  AgentViewerInput,
 } from "./schemas.js";
 
 type ToolResult = {
@@ -39,6 +40,20 @@ function failure(error: unknown): ToolResult {
 
 export function registerAgentTools(server: McpServer, services: ToolServices): void {
   const { service, config } = services;
+
+  server.registerTool(
+    "agent_viewer",
+    {
+      title: "Get the live conversation viewer",
+      description: "Return the private local URL of the automatically updating task, prompt, reply and tool-call viewer. Tasks open it automatically by default. Use open_in_codex with this URL to show it beside the chat when available. No model call or export is needed.",
+      inputSchema: AgentViewerInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async () => {
+      try { return success({ ok: true, viewer: await service.viewer() }); }
+      catch (error) { return failure(error); }
+    },
+  );
 
   server.registerTool(
     "agent_capabilities",
@@ -109,6 +124,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           ok: true,
           task: taskPayload(result.task),
           deduplicated: result.deduplicated,
+          ...(result.viewer_url === undefined ? {} : { viewer_url: result.viewer_url }),
         });
       } catch (error) {
         return failure(error);
@@ -242,6 +258,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           task: taskPayload(result.task),
           parent_task_id: result.task.parent_task_id,
           session_id: result.task.session_id,
+          ...(result.viewer_url === undefined ? {} : { viewer_url: result.viewer_url }),
         });
       } catch (error) {
         return failure(error);

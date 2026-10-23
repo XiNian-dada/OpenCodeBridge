@@ -106,6 +106,9 @@ export class IpcServer {
 
   private async dispatch(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
     switch (method) {
+      case "viewer":
+        parseParams(IpcParams.viewer, params);
+        return this.options.service.viewer();
       case "capabilities":
         parseParams(IpcParams.capabilities, params);
         return this.options.service.capabilities();

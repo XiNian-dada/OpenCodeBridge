@@ -196,6 +196,12 @@ export interface TaskListFilter {
 export interface SpawnResult {
   task: TaskView;
   deduplicated: boolean;
+  viewer_url?: string;
+}
+
+export interface TaskViewerInfo {
+  url: string | null;
+  auto_open: boolean;
 }
 
 export interface WaitTasksInput {

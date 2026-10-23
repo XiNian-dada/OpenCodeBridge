@@ -14,6 +14,7 @@ import type {
   BridgeCapabilities,
   WaitTasksInput,
   WaitTasksResult,
+  TaskViewerInfo,
 } from "../types.js";
 import type { TaskManager } from "./task-manager.js";
 
@@ -32,6 +33,7 @@ export interface ToolServices {
 }
 
 export interface TaskService {
+  viewer(): Promise<TaskViewerInfo>;
   capabilities(): Promise<BridgeCapabilities>;
   wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult>;
   spawn(input: SpawnTaskInput): Promise<SpawnResult>;
@@ -49,7 +51,26 @@ export interface TaskService {
 }
 
 export class LocalTaskService implements TaskService {
+  private taskViewer?: {
+    info(): TaskViewerInfo;
+    showTask(taskId: string): void;
+  };
+
   constructor(private readonly manager: TaskManager) {}
+
+  setViewer(viewer: NonNullable<LocalTaskService["taskViewer"]>): void {
+    this.taskViewer = viewer;
+  }
+
+  async viewer(): Promise<TaskViewerInfo> {
+    return this.taskViewer?.info() ?? { url: null, auto_open: false };
+  }
+
+  private show(result: SpawnResult): SpawnResult {
+    this.taskViewer?.showTask(result.task.task_id);
+    const url = this.taskViewer?.info().url;
+    return url ? { ...result, viewer_url: url } : result;
+  }
 
   async capabilities(): Promise<BridgeCapabilities> {
     return this.manager.capabilities();
@@ -59,8 +80,8 @@ export class LocalTaskService implements TaskService {
     return this.manager.wait(input, signal);
   }
 
-  spawn(input: SpawnTaskInput): Promise<SpawnResult> {
-    return this.manager.spawn(input);
+  async spawn(input: SpawnTaskInput): Promise<SpawnResult> {
+    return this.show(await this.manager.spawn(input));
   }
 
   async status(taskId: string): Promise<TaskView> {
@@ -71,8 +92,8 @@ export class LocalTaskService implements TaskService {
     return this.manager.history(taskId, query);
   }
 
-  message(taskId: string, message: string): Promise<SpawnResult> {
-    return this.manager.message(taskId, message);
+  async message(taskId: string, message: string): Promise<SpawnResult> {
+    return this.show(await this.manager.message(taskId, message));
   }
 
   abort(taskId: string): Promise<AbortTaskResult> {
