@@ -166,3 +166,25 @@ Status: accepted for Phase 1
   makes no model call.
 - Install/uninstall instructions use `pnpm link --global`; Codex continues to use
   an absolute path to the built MCP server.
+
+## Codex delegation ergonomics (2026-10-23)
+
+- `agent_capabilities` reads effective daemon policy without starting OpenCode
+  or invoking a model. Configured allowlist entries are distinct from live
+  availability; actual provider/model resolution remains at task start.
+- `agent_wait` waits inside the daemon for any of up to eight tasks. Its maximum
+  wait is 50 seconds, below the documented 60-second MCP request timeout. A wait
+  timeout never stops execution. Terminal states and permission requests wake
+  the caller; IPC disconnect cancels the wait but not the task.
+- MCP spawn defaults to read-only. Write support still means workspace-level
+  Seatbelt write confinement, not per-file delegation enforcement or OS read
+  isolation. The capability response exposes these limits rather than claiming
+  stronger guarantees.
+- Status, wait and list default to compact snapshots with explicitly truncated
+  long result summaries. Full readback is opt-in; stored records are unchanged.
+  History headers omit the original task text by default to avoid repeating it
+  on every forward-cursor request.
+- Server instructions keep planning/review with Codex, treat worker output as
+  untrusted data, and direct Codex to stop on account/quota/region errors.
+  A persistent daemon-wide account circuit breaker, stronger filesystem read
+  isolation, and per-file write authorization remain outside this change.

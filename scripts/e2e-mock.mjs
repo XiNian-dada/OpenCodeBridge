@@ -24,13 +24,10 @@ async function call(name, args) {
 }
 
 async function waitForStatus(taskId, status) {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const { json } = await call("agent_status", { task_id: taskId });
-    if (json.task?.status === status) return json.task;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(`Timed out waiting for ${taskId} to become ${status}`);
+  const { json } = await call("agent_wait", { task_ids: [taskId], timeout_seconds: 5 });
+  assert(json.ready_task_ids?.includes(taskId), `wait did not return ${taskId}`);
+  assert(json.tasks?.[0]?.status === status, `task did not become ${status}`);
+  return json.tasks[0];
 }
 
 try {
@@ -85,6 +82,8 @@ try {
   const tools = await client.listTools();
   const toolNames = tools.tools.map((tool) => tool.name);
   for (const name of [
+    "agent_capabilities",
+    "agent_wait",
     "agent_spawn",
     "agent_status",
     "agent_history",
@@ -97,17 +96,20 @@ try {
     assert(toolNames.includes(name), `missing tool ${name}`);
   }
 
+  const capabilities = await call("agent_capabilities", {});
+  assert(capabilities.json.capabilities?.simulated === true, "mock capabilities not disclosed");
+
   const spawned = await call("agent_spawn", {
     task: "Acceptance task: inspect the repository.",
     repo_root: repo,
     task_type: "analysis",
     model: "mock/echo",
-    read_only: true,
     timeout_seconds: 10,
     idempotency_key: "acceptance-1",
   });
   assert(spawned.json.ok === true, "spawn failed");
   const taskId = spawned.json.task.task_id;
+  assert(spawned.json.task.read_only === true, "spawn should default to read-only");
   const completed = await waitForStatus(taskId, "completed");
   assert(completed.session_id, "missing session ID");
 
