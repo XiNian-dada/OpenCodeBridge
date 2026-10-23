@@ -82,6 +82,20 @@ export class EventStore {
         ? all
         : all.filter((event) => query.types?.includes(event.event_type));
 
+    if (query.after !== undefined) {
+      const after = query.after;
+      const events = filtered
+        .filter((event) => event.sequence > after)
+        .slice(0, query.limit);
+      const last = events.at(-1)?.sequence ?? after;
+      return {
+        events,
+        next_cursor: String(last),
+        has_more: filtered.some((event) => event.sequence > last),
+        total: filtered.length,
+      };
+    }
+
     const cursor = query.cursor === undefined ? null : Number.parseInt(query.cursor, 10);
     const eligible =
       cursor === null || Number.isNaN(cursor)

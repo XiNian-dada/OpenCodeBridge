@@ -173,6 +173,7 @@ export interface BridgeEvent {
 export interface HistoryQuery {
   limit: number;
   cursor?: string;
+  after?: number;
   types?: string[];
 }
 

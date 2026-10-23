@@ -33,6 +33,25 @@ describe("EventStore", () => {
     expect(oldest.next_cursor).toBeNull();
   });
 
+  it("supports forward cursors for log following", () => {
+    const store = makeStore();
+    for (let i = 1; i <= 5; i++) {
+      store.append("task_a", null, "bridge", `event.${i}`, { i });
+    }
+
+    const first = store.list("task_a", { limit: 2, after: 0 });
+    expect(first.events.map((event) => event.sequence)).toEqual([1, 2]);
+    expect(first.next_cursor).toBe("2");
+    expect(first.has_more).toBe(true);
+
+    const second = store.list("task_a", { limit: 2, after: 2 });
+    expect(second.events.map((event) => event.sequence)).toEqual([3, 4]);
+
+    const last = store.list("task_a", { limit: 2, after: 4 });
+    expect(last.events.map((event) => event.sequence)).toEqual([5]);
+    expect(last.has_more).toBe(false);
+  });
+
   it("filters by event type", () => {
     const store = makeStore();
     store.append("task_a", null, "codex", "task.created", { a: 1 });
