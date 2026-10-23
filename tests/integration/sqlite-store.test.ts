@@ -1,4 +1,4 @@
-import { realpath, rm } from "node:fs/promises";
+import { realpath, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openSqliteStore } from "../../src/storage/sqlite-store.js";
@@ -51,6 +51,7 @@ describe("SqliteStore", () => {
     const path = join(dir, "bridge.db");
     try {
       const store = openSqliteStore(path);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
       const record = task();
       store.saveTask(record);
       store.appendEvent({

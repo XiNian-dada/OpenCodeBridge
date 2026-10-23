@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type { BridgeEvent, TaskRecord, TaskStatus, TaskType, TaskUsage } from "../types.js";
@@ -125,6 +125,7 @@ export class SqliteStore {
     this.path = path;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
+    chmodSync(path, 0o600);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");
