@@ -107,6 +107,7 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_history",
           "agent_message",
           "agent_diff",
+          "agent_cleanup",
           "agent_abort",
           "agent_list",
         ]),
@@ -160,6 +161,15 @@ describe("MCP stdio server with mock adapter", () => {
       expect(diff.isError).toBe(false);
       expect(diff.json.available).toBe(false);
       expect(diff.json.reason).toBe("no_worktree");
+
+      const cleanup = await callTool(mcp.client, "agent_cleanup", {
+        dry_run: true,
+        include_worktrees: true,
+        include_logs: false,
+      });
+      expect(cleanup.isError).toBe(false);
+      expect(cleanup.json.dry_run).toBe(true);
+      expect(cleanup.json.actions).toEqual([]);
 
       const listed = await callTool(mcp.client, "agent_list", { limit: 10 });
       expect((listed.json.tasks as unknown[]).length).toBe(2);

@@ -4,6 +4,7 @@ import { toErrorPayload } from "../errors.js";
 import type { TaskView } from "../types.js";
 import {
   AgentAbortInput,
+  AgentCleanupInput,
   AgentDiffInput,
   AgentHistoryInput,
   AgentListInput,
@@ -201,6 +202,48 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           task: taskPayload(result.task),
           parent_task_id: result.task.parent_task_id,
           session_id: result.task.session_id,
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "agent_cleanup",
+    {
+      title: "Clean task resources",
+      description:
+        "Plan or execute safe cleanup of completed task worktrees and old logs. Dirty worktrees require a local CLI approval and are never removed by this tool.",
+      inputSchema: AgentCleanupInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+      },
+    },
+    async (input) => {
+      try {
+        const result = await service.cleanup({
+          ...(input.task_ids === undefined ? {} : { task_ids: input.task_ids }),
+          dry_run: input.dry_run,
+          include_worktrees: input.include_worktrees,
+          include_logs: input.include_logs,
+        });
+        const approvals = result.actions
+          .filter((action) => action.approval_id !== undefined)
+          .map((action) => ({
+            approval_id: action.approval_id,
+            task_id: action.task_id,
+            path: action.path,
+            command: `bridge approve ${action.approval_id}`,
+          }));
+        return success({
+          ok: true,
+          dry_run: result.dry_run,
+          actions: result.actions as unknown as Array<Record<string, unknown>>,
+          errors: result.errors,
+          approvals,
         });
       } catch (error) {
         return failure(error);

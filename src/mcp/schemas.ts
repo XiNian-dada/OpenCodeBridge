@@ -62,6 +62,15 @@ export const AgentHistoryInput = z
 
 export const AgentAbortInput = z.object({ task_id: taskId }).strict();
 
+export const AgentCleanupInput = z
+  .object({
+    task_ids: z.array(z.string().min(1)).max(100).optional(),
+    dry_run: z.boolean().default(true).describe("Plan only by default; false removes safe resources and creates approvals"),
+    include_worktrees: z.boolean().default(true),
+    include_logs: z.boolean().default(true),
+  })
+  .strict();
+
 export const AgentMessageInput = z
   .object({
     task_id: taskId,
