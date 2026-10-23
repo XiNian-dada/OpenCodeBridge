@@ -9,6 +9,8 @@ import type {
   SpawnTaskInput,
   TaskListFilter,
   TaskView,
+  CleanupOptions,
+  CleanupResult,
 } from "../types.js";
 import type { TaskDiffResult, TaskHistoryResult, TaskService } from "../core/task-service.js";
 import type { IpcResponse } from "./protocol.js";
@@ -97,6 +99,14 @@ export class IpcTaskClient implements TaskService {
 
   list(filter: TaskListFilter): Promise<TaskView[]> {
     return this.request("list", filter);
+  }
+
+  cleanup(options: CleanupOptions): Promise<CleanupResult> {
+    return this.request("cleanup", options);
+  }
+
+  approveCleanup(approvalId: string): Promise<CleanupResult> {
+    return this.request("approve_cleanup", { approval_id: approvalId });
   }
 
   async shutdownDaemon(): Promise<void> {

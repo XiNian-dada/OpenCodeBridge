@@ -39,6 +39,18 @@ describe("daemon IPC", () => {
       const diff = await client.diff(spawned.task.task_id);
       expect(diff.available).toBe(false);
 
+      const cleanup = await client.cleanup({
+        dry_run: true,
+        include_worktrees: true,
+        include_logs: false,
+      });
+      expect(cleanup.dry_run).toBe(true);
+      expect(cleanup.actions).toEqual([]);
+
+      await expect(client.approveCleanup("approval_missing")).rejects.toMatchObject({
+        code: "APPROVAL_NOT_FOUND",
+      });
+
       await expect(client.status("task_missing")).rejects.toMatchObject({
         code: "TASK_NOT_FOUND",
       });

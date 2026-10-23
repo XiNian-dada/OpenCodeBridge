@@ -9,6 +9,8 @@ import type {
   TaskHistorySummary,
   TaskListFilter,
   TaskView,
+  CleanupOptions,
+  CleanupResult,
 } from "../types.js";
 import type { TaskManager } from "./task-manager.js";
 
@@ -37,6 +39,8 @@ export interface TaskService {
     options?: { file?: string; maxChars?: number },
   ): Promise<TaskDiffResult>;
   list(filter: TaskListFilter): Promise<TaskView[]>;
+  cleanup(options: CleanupOptions): Promise<CleanupResult>;
+  approveCleanup(approvalId: string): Promise<CleanupResult>;
 }
 
 export class LocalTaskService implements TaskService {
@@ -71,5 +75,13 @@ export class LocalTaskService implements TaskService {
 
   async list(filter: TaskListFilter): Promise<TaskView[]> {
     return this.manager.list(filter);
+  }
+
+  cleanup(options: CleanupOptions): Promise<CleanupResult> {
+    return this.manager.cleanup(options);
+  }
+
+  approveCleanup(approvalId: string): Promise<CleanupResult> {
+    return this.manager.approveCleanup(approvalId);
   }
 }

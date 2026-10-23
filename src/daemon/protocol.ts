@@ -10,6 +10,8 @@ export const IPC_METHODS = [
   "abort",
   "diff",
   "list",
+  "cleanup",
+  "approve_cleanup",
   "shutdown",
 ] as const;
 
@@ -79,6 +81,15 @@ const ListParams = z
     limit: z.number().int().min(1).max(100),
   })
   .strict();
+const CleanupParams = z
+  .object({
+    task_ids: z.array(z.string().min(1)).max(100).optional(),
+    dry_run: z.boolean(),
+    include_worktrees: z.boolean(),
+    include_logs: z.boolean(),
+  })
+  .strict();
+const ApproveCleanupParams = z.object({ approval_id: z.string().min(1) }).strict();
 
 export function parseParams<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -99,4 +110,6 @@ export const IpcParams = {
   history: HistoryParams,
   diff: DiffParams,
   list: ListParams,
+  cleanup: CleanupParams,
+  approve_cleanup: ApproveCleanupParams,
 } as const;

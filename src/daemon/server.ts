@@ -131,6 +131,12 @@ export class IpcServer {
       }
       case "list":
         return this.options.service.list(parseParams(IpcParams.list, params));
+      case "cleanup":
+        return this.options.service.cleanup(parseParams(IpcParams.cleanup, params));
+      case "approve_cleanup":
+        return this.options.service.approveCleanup(
+          parseParams(IpcParams.approve_cleanup, params).approval_id,
+        );
       case "shutdown":
         if (this.options.onShutdown !== undefined) {
           setImmediate(() => {
