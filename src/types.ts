@@ -200,3 +200,38 @@ export interface AbortTaskResult {
   stopped: boolean;
   already_terminal: boolean;
 }
+
+export interface CleanupOptions {
+  task_ids?: string[];
+  dry_run: boolean;
+  include_worktrees: boolean;
+  include_logs: boolean;
+}
+
+export type CleanupActionKind = "worktree" | "log";
+
+export type CleanupActionStatus = "planned" | "removed" | "skipped" | "approval_required";
+
+export interface CleanupAction {
+  kind: CleanupActionKind;
+  path: string;
+  status: CleanupActionStatus;
+  reason?: string;
+  task_id?: string;
+  approval_id?: string;
+  bytes?: number;
+}
+
+export interface CleanupResult {
+  dry_run: boolean;
+  actions: CleanupAction[];
+  errors: string[];
+}
+
+export interface ApprovalRecord {
+  id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+  consumed_at: string | null;
+}

@@ -34,6 +34,13 @@ const RawConfigSchema = z
       })
       .strict()
       .optional(),
+    cleanup: z
+      .object({
+        log_retention_days: z.number().int().min(1).max(3650).optional(),
+        worktree_retention_days: z.number().int().min(0).max(3650).optional(),
+      })
+      .strict()
+      .optional(),
     security: z
       .object({
         allowed_repo_roots: z.array(z.string().min(1)).optional(),
@@ -86,6 +93,10 @@ export interface BridgeConfig {
     allow_expensive: boolean;
     max_cost_usd: number | null;
     max_tokens: number | null;
+  };
+  cleanup?: {
+    log_retention_days: number;
+    worktree_retention_days: number;
   };
   security: {
     allowed_repo_roots: string[];
@@ -241,6 +252,10 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
       allow_expensive: raw.models?.allow_expensive ?? false,
       max_cost_usd: raw.models?.max_cost_usd ?? null,
       max_tokens: raw.models?.max_tokens ?? null,
+    },
+    cleanup: {
+      log_retention_days: raw.cleanup?.log_retention_days ?? 30,
+      worktree_retention_days: raw.cleanup?.worktree_retention_days ?? 30,
     },
     security: {
       allowed_repo_roots: allowedRepoRoots,

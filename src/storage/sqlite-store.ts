@@ -1,7 +1,14 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { BridgeEvent, TaskRecord, TaskStatus, TaskType, TaskUsage } from "../types.js";
+import type {
+  ApprovalRecord,
+  BridgeEvent,
+  TaskRecord,
+  TaskStatus,
+  TaskType,
+  TaskUsage,
+} from "../types.js";
 
 const MIGRATIONS: string[] = [
   `
@@ -337,6 +344,57 @@ export class SqliteStore {
         cost_known: task.usage.cost_known ? 1 : 0,
         updated_at: new Date().toISOString(),
       });
+  }
+
+  saveApproval(approval: ApprovalRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO approvals(id, kind, payload_json, created_at, consumed_at)
+         VALUES (@id, @kind, @payload_json, @created_at, @consumed_at)
+         ON CONFLICT(id) DO UPDATE SET consumed_at = excluded.consumed_at`,
+      )
+      .run({
+        id: approval.id,
+        kind: approval.kind,
+        payload_json: JSON.stringify(approval.payload),
+        created_at: approval.created_at,
+        consumed_at: approval.consumed_at,
+      });
+  }
+
+  getApproval(id: string): ApprovalRecord | null {
+    const row = this.db.prepare("SELECT * FROM approvals WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (row === undefined) return null;
+    return {
+      id: String(row.id),
+      kind: String(row.kind),
+      payload: JSON.parse(String(row.payload_json)) as Record<string, unknown>,
+      created_at: String(row.created_at),
+      consumed_at: row.consumed_at === null ? null : String(row.consumed_at),
+    };
+  }
+
+  consumeApproval(id: string): boolean {
+    const result = this.db
+      .prepare("UPDATE approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL")
+      .run(new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  saveCleanupRecord(record: {
+    id: string;
+    kind: string;
+    path: string | null;
+    result: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO cleanup_records(id, kind, path, result, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(record.id, record.kind, record.path, record.result, new Date().toISOString());
   }
 
   loadTasks(): TaskRecord[] {

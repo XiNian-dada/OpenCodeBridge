@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { BridgeConfig } from "../config.js";
 import type { DiffManager } from "../git/diff-manager.js";
 import type { TaskDiffResult, TaskHistoryResult } from "./task-service.js";
 import type { SqliteStore } from "../storage/sqlite-store.js";
+import { resolveDataDir } from "../paths.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
 import { BridgeError, isBridgeError, toErrorPayload } from "../errors.js";
 import type { Logger } from "../logging.js";
@@ -11,7 +13,11 @@ import type { ModelPolicy } from "../policy/model-policy.js";
 import type { PathPolicy } from "../policy/path-policy.js";
 import type {
   AbortTaskResult,
+  ApprovalRecord,
   BridgeEvent,
+  CleanupAction,
+  CleanupOptions,
+  CleanupResult,
   HistoryQuery,
   SpawnResult,
   SpawnTaskInput,
@@ -64,6 +70,7 @@ export class TaskManager {
   private readonly now: () => Date;
   private readonly idFactory: () => string;
   private readonly store: SqliteStore | undefined;
+  private readonly approvals = new Map<string, ApprovalRecord>();
   private shuttingDown = false;
 
   constructor(private readonly options: TaskManagerOptions) {
@@ -371,6 +378,225 @@ export class TaskManager {
       ...(options.maxChars === undefined ? {} : { maxChars: options.maxChars }),
     });
     return { task_id: task.id, ...result };
+  }
+
+  async cleanup(options: CleanupOptions): Promise<CleanupResult> {
+    const actions: CleanupAction[] = [];
+    const errors: string[] = [];
+    const logRetentionDays = this.options.config.cleanup?.log_retention_days ?? 30;
+    const worktreeRetentionDays = this.options.config.cleanup?.worktree_retention_days ?? 30;
+    const now = this.now().getTime();
+
+    const tasks =
+      options.task_ids === undefined
+        ? [...this.tasks.values()]
+        : options.task_ids.map((id) => this.requireTask(id));
+
+    if (options.include_worktrees) {
+      for (const task of tasks) {
+        if (task.worktree_path === null) continue;
+        if (!isTerminal(task.status)) {
+          actions.push({
+            kind: "worktree",
+            path: task.worktree_path,
+            status: "skipped",
+            reason: "task_active",
+            task_id: task.id,
+          });
+          continue;
+        }
+
+        const ended = Date.parse(task.ended_at ?? task.created_at);
+        const ageDays = Number.isFinite(ended) ? (now - ended) / 86_400_000 : 0;
+        if (options.task_ids === undefined && ageDays < worktreeRetentionDays) {
+          actions.push({
+            kind: "worktree",
+            path: task.worktree_path,
+            status: "skipped",
+            reason: "retention",
+            task_id: task.id,
+          });
+          continue;
+        }
+
+        try {
+          const worktrees = this.options.worktrees;
+          if (worktrees === undefined) {
+            throw new BridgeError("CLEANUP_FAILED", "Worktree manager is not configured");
+          }
+          const status = await worktrees.dirtyStatus(task.worktree_path);
+          if (status.dirty) {
+            if (options.dry_run) {
+              actions.push({
+                kind: "worktree",
+                path: task.worktree_path,
+                status: "approval_required",
+                reason: "worktree_has_changes",
+                task_id: task.id,
+              });
+            } else {
+              const approval = this.createApproval("cleanup_worktree", {
+                task_id: task.id,
+                worktree_path: task.worktree_path,
+                repo_root: task.repo_root,
+                base_commit: task.base_commit,
+              });
+              actions.push({
+                kind: "worktree",
+                path: task.worktree_path,
+                status: "approval_required",
+                reason: "worktree_has_changes",
+                task_id: task.id,
+                approval_id: approval.id,
+              });
+            }
+            continue;
+          }
+
+          if (options.dry_run) {
+            actions.push({
+              kind: "worktree",
+              path: task.worktree_path,
+              status: "planned",
+              reason: "clean_worktree",
+              task_id: task.id,
+            });
+          } else {
+            const result = await worktrees.remove(task.worktree_path, task.repo_root);
+            if (result.removed) {
+              this.recordCleanup("worktree", task.worktree_path, "removed");
+              actions.push({
+                kind: "worktree",
+                path: task.worktree_path,
+                status: "removed",
+                reason: "clean_worktree",
+                task_id: task.id,
+              });
+            } else {
+              actions.push({
+                kind: "worktree",
+                path: task.worktree_path,
+                status: "skipped",
+                reason: result.reason ?? "not_removed",
+                task_id: task.id,
+              });
+            }
+          }
+        } catch (error) {
+          errors.push(
+            `worktree ${task.worktree_path}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    }
+
+    if (options.include_logs) {
+      const logDir = join(resolveDataDir(this.options.config), "logs");
+      try {
+        const entries = await readdir(logDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.endsWith(".log") || entry.name === "daemon.log") continue;
+          const path = join(logDir, entry.name);
+          try {
+            const info = await stat(path);
+            const ageDays = (now - info.mtimeMs) / 86_400_000;
+            if (ageDays < logRetentionDays) continue;
+            if (options.dry_run) {
+              actions.push({
+                kind: "log",
+                path,
+                status: "planned",
+                reason: "log_retention",
+                bytes: info.size,
+              });
+            } else {
+              await unlink(path);
+              this.recordCleanup("log", path, "removed");
+              actions.push({
+                kind: "log",
+                path,
+                status: "removed",
+                reason: "log_retention",
+                bytes: info.size,
+              });
+            }
+          } catch (error) {
+            errors.push(
+              `log ${path}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          errors.push(`log directory: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+
+    return { dry_run: options.dry_run, actions, errors };
+  }
+
+  async approveCleanup(approvalId: string): Promise<CleanupResult> {
+    const approval =
+      this.approvals.get(approvalId) ?? this.store?.getApproval(approvalId) ?? null;
+    if (approval === null) {
+      throw new BridgeError("APPROVAL_NOT_FOUND", `Cleanup approval not found: ${approvalId}`);
+    }
+    if (approval.kind !== "cleanup_worktree") {
+      throw new BridgeError("APPROVAL_NOT_FOUND", `Unsupported approval kind: ${approval.kind}`);
+    }
+    if (approval.consumed_at !== null) {
+      throw new BridgeError("APPROVAL_CONSUMED", `Cleanup approval already consumed: ${approvalId}`);
+    }
+    if (approval.payload.task_id === undefined || approval.payload.worktree_path === undefined) {
+      throw new BridgeError("CLEANUP_FAILED", "Cleanup approval is missing worktree metadata");
+    }
+
+    const taskId = String(approval.payload.task_id);
+    const worktreePath = String(approval.payload.worktree_path);
+    const repoRoot = String(approval.payload.repo_root ?? "");
+    const baseCommit = String(approval.payload.base_commit ?? "");
+
+    try {
+      let patchPath: string | null = null;
+      if (baseCommit !== "" && this.options.diffs !== undefined) {
+        const diff = await this.options.diffs
+          .getDiff({ worktreePath, baseCommit, maxChars: 200_000 })
+          .catch(() => null);
+        if (diff !== null && diff.patch !== "") {
+          const approvalDir = join(resolveDataDir(this.options.config), "approvals");
+          await mkdir(approvalDir, { recursive: true, mode: 0o700 });
+          patchPath = join(approvalDir, `${approvalId}.patch`);
+          await writeFile(patchPath, diff.patch, { mode: 0o600 });
+        }
+      }
+
+      if (repoRoot !== "") {
+        await this.options.worktrees?.forceRemove(worktreePath, repoRoot);
+      }
+      this.store?.consumeApproval(approvalId);
+      approval.consumed_at = this.now().toISOString();
+      this.approvals.set(approvalId, approval);
+      this.recordCleanup("worktree", worktreePath, "approved_removed");
+      return {
+        dry_run: false,
+        actions: [
+          {
+            kind: "worktree",
+            path: worktreePath,
+            status: "removed",
+            task_id: taskId,
+            ...(patchPath === null ? {} : { reason: `patch_saved:${patchPath}` }),
+          },
+        ],
+        errors: [],
+      };
+    } catch (error) {
+      throw new BridgeError("CLEANUP_FAILED", "Approved cleanup failed", {
+        cause: error,
+        details: { approval_id: approvalId, worktree_path: worktreePath },
+      });
+    }
   }
 
   async abort(taskId: string): Promise<AbortTaskResult> {
@@ -989,6 +1215,28 @@ export class TaskManager {
         cause: error,
       });
     }
+  }
+
+  private createApproval(kind: string, payload: Record<string, unknown>): ApprovalRecord {
+    const approval: ApprovalRecord = {
+      id: `approval_${randomUUID()}`,
+      kind,
+      payload,
+      created_at: this.now().toISOString(),
+      consumed_at: null,
+    };
+    this.approvals.set(approval.id, approval);
+    this.store?.saveApproval(approval);
+    return approval;
+  }
+
+  private recordCleanup(kind: string, path: string, result: string): void {
+    this.store?.saveCleanupRecord({
+      id: `cleanup_${randomUUID()}`,
+      kind,
+      path,
+      result,
+    });
   }
 
   private budgetExceeded(usage: TaskUsage): boolean {

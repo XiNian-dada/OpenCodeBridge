@@ -103,6 +103,23 @@ export class WorktreeManager {
     }
   }
 
+  async forceRemove(worktreePath: string, repoRoot: string): Promise<WorktreeRemoveResult> {
+    const root = join(this.dataDir, "worktrees");
+    if (!isWithin(root, worktreePath)) {
+      return { removed: false, reason: "unsafe" };
+    }
+    try {
+      await git(repoRoot, ["worktree", "remove", "--force", worktreePath]);
+      await git(repoRoot, ["worktree", "prune"]).catch(() => undefined);
+      return { removed: true };
+    } catch (error) {
+      throw new BridgeError("WORKTREE_CREATE_FAILED", "Failed to force-remove Git worktree", {
+        cause: error,
+        details: { worktree_path: worktreePath, repo_root: repoRoot },
+      });
+    }
+  }
+
   async remove(worktreePath: string, repoRoot: string): Promise<WorktreeRemoveResult> {
     const root = join(this.dataDir, "worktrees");
     if (!isWithin(root, worktreePath)) {
