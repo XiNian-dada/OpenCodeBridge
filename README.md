@@ -344,8 +344,9 @@ consume an approval.
 reads broadly; read-only tasks rely on OpenCode permissions rather than an OS
 read sandbox. Do not run untrusted repositories without reviewing this boundary.
 Writable tasks are edit-only, so OpenCode cannot run tests. Worktrees and logs
-are retained until cleanup support is added. The main repository's Git object
-store is deliberately not writable from the sandbox. Tasks now survive MCP
+are retained by default; `agent_cleanup` and the local approval CLI remove safe
+resources, while dirty worktrees require user approval. The main repository's
+Git object store is deliberately not writable from the sandbox. Tasks now survive MCP
 adapter exits through the daemon, but a daemon crash cannot resume an in-flight
 OpenCode turn; those tasks are marked interrupted and preserved for review.
 

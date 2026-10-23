@@ -104,8 +104,8 @@ Status: accepted for Phase 1
 - On non-macOS platforms, or if `sandbox-exec` is unavailable, writable tasks
   fail with `SANDBOX_UNAVAILABLE`. No permission-only fallback is presented as
   an OS sandbox.
-- Worktrees are retained after completion, failure, or abort. Automatic cleanup
-  and independent user approval remain Phase 5 work.
+- Worktrees are retained after completion, failure, or abort. Phase 5 adds
+  conservative cleanup and an independent local approval CLI.
 
 ## Session continuation
 
@@ -135,7 +135,8 @@ Status: accepted for Phase 1
 - `BRIDGE_INPROCESS=1` is a test/development fallback only; it does not survive
   MCP exit and is not the default.
 - Model usage is persisted separately from task state. Approvals and cleanup
-  records have tables reserved for Phase 5 but no destructive automation yet.
+  records now back the Phase 5 cleanup workflow; destructive removal still
+  requires the local CLI approval channel.
 
 ## Phase 5 update
 
