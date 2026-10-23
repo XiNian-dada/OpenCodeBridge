@@ -153,3 +153,16 @@ Status: accepted for Phase 1
   preserved. Cleanup actions are written to `cleanup_records`.
 - The CLI also provides `bridge cleanup`, `bridge daemon status`, and
   `bridge daemon stop`. Full task inspection/log-follow CLI remains Phase 6.
+
+## Phase 6 update
+
+- The CLI is a thin client over the same daemon IPC protocol used by MCP. It
+  supports task listing, status, history/log following, diff review, abort,
+  message continuation, cleanup, approval, and daemon lifecycle commands.
+- `logs --follow` uses a forward sequence cursor (`after`) rather than re-reading
+  the whole event log.
+- The acceptance script runs typecheck, tests, build, and a full mock MCP request
+  through the daemon and SQLite. Live OpenCode validation remains opt-in and
+  makes no model call.
+- Install/uninstall instructions use `pnpm link --global`; Codex continues to use
+  an absolute path to the built MCP server.

@@ -3,10 +3,10 @@
 An MCP bridge that lets Codex delegate bounded coding tasks to OpenCode while
 keeping task state, prompts, events, and cancellation under bridge control.
 
-> **Phase 5 status:** token/cost budgets, cleanup planning, safe worktree/log
-> cleanup, independent CLI approval for destructive cleanup, and log retention are
-> implemented. Destructive worktree deletion cannot be authorized by an MCP call.
-> The full task-inspection CLI and dashboard remain future work.
+> **Phase 6 status:** the task-inspection CLI (`tasks`, `status`, `logs --follow`,
+> `diff`), install/uninstall documentation, and an end-to-end acceptance script
+> are implemented. Budgets, cleanup, approvals, daemon persistence, and restart
+> recovery are in place. A web dashboard is not part of this phase.
 
 ## What works now
 
@@ -41,6 +41,14 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Persistent approval records for dirty-worktree deletion
 - Independent local CLI approval channel (`bridge approve <id>`)
 - Log retention and safe clean-worktree removal
+- CLI task inspection:
+  - `bridge tasks`
+  - `bridge status`
+  - `bridge logs --follow`
+  - `bridge diff`
+  - `bridge abort` / `bridge message`
+  - `--json` output for scripting
+- End-to-end mock acceptance script
 
 ## Requirements
 
@@ -68,6 +76,24 @@ PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm install
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm typecheck
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm build
+PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm link --global
+bridge daemon status
+```
+
+`pnpm link --global` installs the `bridge` CLI. Codex itself only needs the
+absolute path to `dist/mcp/server.js`; the global link is for human inspection.
+
+To uninstall the CLI:
+
+```bash
+bridge daemon stop
+PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm unlink --global codex-opencode-bridge
+```
+
+Review the data directory before deleting it:
+
+```bash
+rm -rf "$HOME/Library/Application Support/codex-opencode-bridge"   # macOS
 ```
 
 ## Configuration
@@ -287,6 +313,28 @@ Mock events are explicitly mock-labelled. Real OpenCode events are obtained from
 the session API and SSE stream; no execution summary is synthesized as if it
 were a tool record.
 
+## CLI
+
+All commands use the local daemon and print human-readable output by default.
+Add `--json` for scripting.
+
+```bash
+bridge tasks --status running --limit 20
+bridge tasks --repo /Users/you/Code/example --json
+bridge status <task-id>
+bridge logs <task-id>
+bridge logs --follow <task-id>
+bridge logs <task-id> --types tool.called,tool.completed
+bridge diff <task-id>
+bridge diff <task-id> --file src/parser.ts --max-chars 20000
+bridge abort <task-id>
+bridge message <task-id> "Please add the missing edge-case assertion."
+```
+
+`bridge logs --follow` polls the daemon and prints new events until Ctrl-C.
+`bridge diff` shows the worktree file summary and patch; large patches are
+truncated unless a larger `--max-chars` is supplied.
+
 ## Budgets and cleanup
 
 `models.max_tokens` and `models.max_cost_usd` are soft budgets. Usage events are
@@ -315,7 +363,7 @@ Before an approved dirty worktree is force-removed, the bridge saves its patch
 under `data_dir/approvals/<approval-id>.patch`. An MCP tool call alone can never
 consume an approval.
 
-## Security boundaries in Phase 5
+## Security boundaries in Phase 6
 
 - Only paths under `security.allowed_repo_roots` are accepted.
 - Writable OpenCode tasks are enabled only on macOS with `sandbox-exec`.
@@ -350,19 +398,19 @@ Git object store is deliberately not writable from the sandbox. Tasks now surviv
 adapter exits through the daemon, but a daemon crash cannot resume an in-flight
 OpenCode turn; those tasks are marked interrupted and preserved for review.
 
-## Tests
+## Tests and acceptance
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-The default suite has 86 passing tests. It covers state transitions, queues,
+The default suite has 88 passing tests. It covers state transitions, queues,
 model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
 startup, worktrees, diffs, session continuation, SQLite persistence, daemon
-IPC/reconnect, restart recovery, budgets, cleanup approvals, CLI approval,
-Seatbelt write confinement, and fake OpenCode adapter lifecycles. All default
-tests are free.
+IPC/reconnect, restart recovery, budgets, cleanup approvals, CLI approval and
+inspection, Seatbelt write confinement, and fake OpenCode adapter lifecycles.
+All default tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a
 prompt with `resume: false`):
@@ -375,6 +423,18 @@ It starts a real private OpenCode 2.1 server under the Seatbelt sandbox, checks
 the version and models, creates a session, admits a no-reply prompt, and observes
 `server.connected`. The live test passed against OpenCode 2.1.2 on this machine.
 
+Run the full acceptance suite (typecheck, tests, build, MCP + daemon mock
+lifecycle):
+
+```bash
+pnpm acceptance
+OPENCODE_LIVE=1 pnpm acceptance   # also runs the no-model live smoke
+```
+
+The mock acceptance script exercises MCP -> daemon -> SQLite -> mock adapter,
+task spawn, status, history, follow-up turn, diff, cleanup planning, and task
+listing without spending model credits.
+
 ## Roadmap
 
 | Phase | Scope |
@@ -383,7 +443,7 @@ the version and models, creates a session, admits a no-reply prompt, and observe
 | 3 | **Done:** Git worktrees, diff inspection, macOS Seatbelt write confinement, edit-only writable tasks |
 | 4 | **Done:** SQLite, daemon, Unix socket IPC, queue persistence, restart recovery, usage records |
 | 5 | **Done:** budgets, log retention, cleanup plans, independent CLI approval for dirty worktrees |
-| 6 | CLI (`bridge tasks/status/logs/diff`), live log follow, install/uninstall docs, end-to-end acceptance scripts |
+| 6 | **Done:** CLI inspection/live logs/diff, install/uninstall docs, acceptance script |
 
 See `docs/decisions.md` for technical decisions and
 `examples/codex-config.toml` for a ready-to-edit Codex configuration.
