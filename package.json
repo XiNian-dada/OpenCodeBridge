@@ -20,7 +20,8 @@
     "test:watch": "vitest",
     "dev:mcp": "tsx src/mcp/server.ts",
     "start:mcp": "node dist/mcp/server.js",
-    "dev:cli": "tsx src/cli/index.ts"
+    "dev:cli": "tsx src/cli/index.ts",
+    "acceptance": "bash scripts/acceptance.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
