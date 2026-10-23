@@ -57,7 +57,7 @@ function config(dir: string): BridgeConfig {
     cleanup: { log_retention_days: 30, worktree_retention_days: 0 },
     scheduler: { max_concurrent: 1, max_queue: 5, default_timeout_seconds: 30, max_timeout_seconds: 60 },
     models: { default: "mock/echo", allow: ["mock/echo"], expensive: [], allow_expensive: false, max_cost_usd: null, max_tokens: null },
-    security: { allowed_repo_roots: [dir], require_git_for_writes: true, allow_external_directories: false, read_sandbox: "auto" },
+    security: { allowed_repo_roots: [dir], require_git_for_writes: true, allow_external_directories: false, read_sandbox: "auto", model_gateway: "auto" },
     opencode: { binary: "opencode", compatibility: "2.1.x", startup_timeout_ms: 5000 },
     history: { default_limit: 20, max_limit: 100, max_payload_chars: 4000, max_delegation_chars: 50_000 },
     mock: { scenario: "success", delay_ms: 5 },

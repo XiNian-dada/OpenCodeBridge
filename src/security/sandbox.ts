@@ -16,6 +16,10 @@ export interface SandboxProfileOptions {
   /** The directory the worker is allowed to read (and, in write mode, edit). */
   worktreePath: string;
   gitDir?: string;
+  /** When set, outbound networking is restricted to this localhost gateway port. */
+  gatewayPort?: number;
+  /** The task has its own HOME/XDG directories under taskDir. */
+  isolateConfig?: boolean;
 }
 
 export function sandboxAvailable(): boolean {
@@ -46,6 +50,12 @@ function readRules(paths: string[]): string {
     .join("\n");
 }
 
+function networkRules(options: SandboxProfileOptions): string {
+  if (options.gatewayPort === undefined) return "(allow network*)";
+  return `(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:${options.gatewayPort}"))`;
+}
+
 function canonicalPath(path: string): string {
   try {
     return realpathSync(path);
@@ -65,23 +75,47 @@ export function buildSeatbeltProfile(options: SandboxProfileOptions): string {
     options.tempDir,
     options.worktreePath,
     ...(options.gitDir === undefined ? [] : [options.gitDir]),
-    join(opencode.data, "log"),
-    join(opencode.data, "shell"),
-    join(opencode.data, "snapshot"),
-    opencode.state,
-    opencode.cache,
+    ...(options.isolateConfig === true
+      ? []
+      : [
+          join(opencode.data, "log"),
+          join(opencode.data, "shell"),
+          join(opencode.data, "snapshot"),
+          opencode.state,
+          opencode.cache,
+        ]),
   ];
+  const restrictedReads = options.isolateConfig === true;
+  const readable = [
+    options.taskDir,
+    options.tempDir,
+    options.worktreePath,
+    ...(options.gitDir === undefined ? [] : [options.gitDir]),
+  ];
+  const readPolicy = restrictedReads
+    ? `(deny file-read-data (subpath "${escapeSchemeString(homedir())}"))
+(deny file-read-data (subpath "/Users"))
+(deny file-read-data (subpath "/Volumes"))
+(deny file-read-data (subpath "/Network"))
+(deny file-read-data (subpath "/private/tmp"))
+(deny file-read-data (subpath "/tmp"))
+(deny file-read-data (subpath "/private/var/folders"))
+(deny file-read-data (subpath "/Library/Keychains"))
+(allow file-read-data
+${readRules(readable)})`
+    : "";
 
   return `(version 1)
 (deny default)
 (allow process*)
 (allow file-read*)
+${readPolicy}
 (allow file-write*
 ${readRules(writable)}
   (literal "/dev/null"))
+${networkRules(options)}
 (allow sysctl-read)
 (allow mach-lookup)
-(allow network*)
 (allow signal)
 (allow ipc-posix*)
 `;
@@ -100,17 +134,16 @@ export function buildReadSeatbeltProfile(options: SandboxProfileOptions): string
     options.taskDir,
     options.tempDir,
     options.worktreePath,
-    opencode.data,
-    opencode.state,
-    opencode.cache,
-    opencode.config,
+    ...(options.isolateConfig === true
+      ? []
+      : [opencode.data, opencode.state, opencode.cache, opencode.config]),
   ];
   const writable = [
     options.taskDir,
     options.tempDir,
-    opencode.data,
-    opencode.state,
-    opencode.cache,
+    ...(options.isolateConfig === true
+      ? []
+      : [opencode.data, opencode.state, opencode.cache]),
   ];
 
   return `(version 1)
@@ -129,9 +162,9 @@ export function buildReadSeatbeltProfile(options: SandboxProfileOptions): string
 ${readRules(readable)})
 (allow file-write*
 ${readRules(writable)})
+${networkRules(options)}
 (allow sysctl-read)
 (allow mach-lookup)
-(allow network*)
 (allow signal)
 (allow ipc-posix*)
 `;

@@ -250,8 +250,9 @@ export interface BridgeCapabilities {
     shell_allowed: false;
     read_isolation: "macos_seatbelt" | "opencode_permissions_only" | "simulated";
     write_isolation: "macos_seatbelt" | "unavailable" | "simulated";
-    network: "provider_required" | "none" | "simulated";
-    credential_isolation: "partial" | "simulated";
+    network: "gateway_only" | "provider_required" | "none" | "simulated";
+    credential_isolation: "gateway" | "gateway_configured" | "partial" | "simulated";
+    model_gateway: "auto" | "require" | "off";
   };
   limitations: string[];
 }
@@ -383,6 +384,7 @@ export interface DeliveryPackage {
     variant: string | null;
     verified: boolean;
     simulated: boolean;
+    gateway: boolean;
   };
   git: {
     available: boolean;

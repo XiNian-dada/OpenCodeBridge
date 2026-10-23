@@ -18,6 +18,8 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Policy/isolation discovery without a model call, preflight validation, bounded batch waiting, and compact task snapshots
 - Verifiable delivery packages with base commit, patch hash, observed commands, actual model resolution, and explicit verification gaps
 - macOS read-only Seatbelt isolation with a filtered child environment
+- Per-task local model gateway: provider credentials stay in the bridge, while
+  the sandboxed task gets a dummy key, isolated config, and localhost-only network
 - Minimal hashed context snapshots for read-only tasks, with main-Agent-controlled expansion
 - Provider auth/quota/region pause with a local `bridge resume` channel
 - FIFO queue with configurable concurrency and queue limits
@@ -134,6 +136,12 @@ root with a real absolute path.
 - `security.read_sandbox` defaults to `auto`: read-only OpenCode tasks use a
   macOS Seatbelt read profile when available. `require` rejects read-only tasks
   without OS read isolation; `off` keeps OpenCode permissions only.
+- `security.model_gateway` defaults to `require`. Before starting a task, the
+  bridge probes the selected provider, then runs the task through a localhost
+  OpenAI-compatible gateway. The task process gets a dummy key, an isolated
+  HOME/XDG tree, no user config/MCP servers, and network access only to that
+  gateway. `auto` falls back to direct provider access for unsupported
+  providers; `off` disables the gateway and restores direct access.
 - `models.allow` is an exact allowlist. A model not in it is rejected with
   `MODEL_NOT_ALLOWED`.
 - Models listed in `models.expensive` require `models.allow_expensive: true`.
@@ -177,10 +185,12 @@ rejects missing models with `MODEL_UNAVAILABLE`.
 Read-only OpenCode tasks run with edit, shell, external-directory, web,
 subagent, and question permissions denied. On macOS they also run under a
 Seatbelt read profile by default: the user home, external mounts, and system
-temp outside the task area are hidden from the process. The model transport
-still needs network access and OpenCode's own auth/config directories; tool
-access to those directories is denied. Provider availability remains
-unverified until task start.
+temp outside the task area are hidden from the process. In gateway mode the
+task has an isolated HOME/XDG tree, no provider credentials, no user MCP
+servers, and outbound network access only to a per-task localhost gateway. The
+bridge's gateway process holds the upstream key and is the only component that
+reaches the provider. Provider availability remains unverified until task
+start.
 
 Writable OpenCode tasks (`read_only: false`) require macOS and a Git repository.
 The bridge creates a detached worktree under `data_dir/worktrees/`, starts
@@ -317,11 +327,11 @@ ID exists upstream. Mock capabilities and results are explicitly simulated.
 `provider_paused` is populated after a provider auth/quota/region error and
 blocks new delegations until the local `bridge resume` command clears it.
 
-The response also discloses the lack of OS read isolation when it is not
-available, per-file scope enforcement, and independent verification of
-OpenCode's internal model calls. Do not delegate writable work if your task
-requires boundaries the bridge does not enforce. In that case Codex should
-implement the changes directly.
+The response also discloses OS read isolation, the local model gateway mode
+(`gateway`, `gateway_configured`, or `partial`), per-file scope enforcement, and
+independent verification of OpenCode's internal model calls. Do not delegate
+writable work if your task requires boundaries the bridge does not enforce. In
+that case Codex should implement the changes directly.
 
 ### `agent_preflight`
 
@@ -335,7 +345,8 @@ the real Git top level and recorded `HEAD`, checks model policy, and returns:
   created at task start, plus the planned worktree parent
 - effective read/glob/grep/edit/write/patch permissions and denied shell, web,
   external-directory, subagent, and question capabilities
-- actual OS read/write isolation and the provider-network/credential exceptions
+- actual OS read/write isolation, model gateway mode, and the
+  provider-network/credential exceptions
 - a planned context snapshot with per-file SHA-256 and total bytes when
   `context_files` is supplied
 - soft budgets, hard limits, default/max timeout, warnings, and an explicit
@@ -445,7 +456,8 @@ the patch. Worktrees are retained after completion or failure for review.
 Returns a reviewable delivery package instead of a bare "completed" claim. It
 includes the recorded base commit, worktree, changed files, patch, patch SHA-256,
 observed shell/tool commands and any exit codes, the actually resolved model
-when an `opencode.model.resolved` event exists, the context snapshot manifest
+when an `opencode.model.resolved` event exists, whether that request went
+through the local model gateway (`model.gateway`), the context snapshot manifest
 when one was used, usage/cost, and a verification status. Review/analysis tasks
 are prompted to end with a fenced JSON findings block; `delivery.findings`
 contains the parsed `location`, `trigger`, `evidence`, and `confidence` values,
@@ -579,9 +591,13 @@ consume an approval.
   user home, external mounts, and system temp outside the task area are hidden
   from the process. `security.read_sandbox: "require"` fails closed on hosts
   without it.
+- In model-gateway mode, the task gets a dummy provider key, an isolated
+  HOME/XDG tree, and no user MCP/plugin configuration. Outbound network is
+  limited to the per-task localhost gateway. The bridge process holds the
+  upstream key and forwards only `/v1/*` to the selected provider.
 - The child environment is filtered: unrelated cloud, SSH, Git-host, and CI
-  credentials are not inherited. Provider key prefixes are retained because
-  OpenCode needs them to reach the model.
+  credentials are not inherited. Provider key prefixes are retained only when
+  the gateway is off.
 - Writable OpenCode tasks are enabled only on macOS with `sandbox-exec`.
 - Writable tasks use a detached Git worktree; uncommitted main-tree changes are
   not carried into the worktree.
@@ -590,7 +606,9 @@ consume an approval.
 - The Seatbelt profile confines writes to the worktree, its task-local Git
   metadata, task data/temp directories, and OpenCode's own state/cache/log
   directories. OpenCode snapshots are disabled, and the main repository's Git
-  object store is not writable.
+  object store is not writable. In gateway mode the write profile also denies
+  user-home/external file data, allowing only the worktree, Git metadata, task
+  data, and isolated config tree.
 - The model allowlist is default-deny.
 - Expensive models require a local configuration change; a task cannot grant
   itself permission.
@@ -604,15 +622,17 @@ consume an approval.
   local `bridge approve` CLI, not by Codex.
 - MCP logs go to stderr. stdout is reserved for the JSON-RPC protocol.
 
-**Known limitations:** on macOS, the read profile is a denylist overlay rather
-than a complete read whitelist. The OpenCode process can still read its provider
-auth/config directories because the model transport needs them; tool access to
-those directories is denied, but this is not a credential-free gateway. Outbound
-network is available for the model provider; worker web, shell, subagent, and
-external-directory tools are denied. On Linux, read-only tasks rely on OpenCode
-permissions unless OS read isolation is added. The writable Seatbelt profile
-still allows broad reads. Writable tasks are edit-only, so OpenCode cannot run
-tests. Worktrees and logs
+**Known limitations:** the model gateway supports OpenAI-compatible provider
+packages. `security.model_gateway: "require"` fails closed for other providers;
+`auto` falls back to direct provider access and is reported as
+`gateway_configured` rather than fully isolated. The short-lived provider probe
+runs before the sandbox so it can read provider settings; it receives no task
+prompt and has MCP disabled. On macOS, the read profile is still a denylist
+overlay rather than a complete filesystem whitelist. On Linux, read-only tasks
+rely on OpenCode permissions unless OS read isolation is added. When the gateway
+is off or falls back to direct access, writable tasks use the broader write
+profile and can read more of the host. Writable tasks are edit-only, so OpenCode
+cannot run tests. Worktrees and logs
 are retained by default; `agent_cleanup` and the local approval CLI remove safe
 resources, while dirty worktrees require user approval. The main repository's
 Git object store is deliberately not writable from the sandbox. Tasks now survive MCP

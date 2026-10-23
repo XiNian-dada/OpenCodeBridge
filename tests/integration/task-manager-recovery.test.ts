@@ -34,6 +34,7 @@ function config(dir: string): BridgeConfig {
       require_git_for_writes: true,
       allow_external_directories: false,
       read_sandbox: "auto",
+      model_gateway: "auto",
     },
     opencode: {
       binary: "opencode",

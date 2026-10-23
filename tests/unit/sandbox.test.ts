@@ -46,6 +46,20 @@ describe("macOS sandbox profile", () => {
     expect(profile).toContain('(deny file-read-data (subpath "/private/var/folders"))');
     expect(profile).toContain('(subpath "/Users/example/worktree")');
     expect(profile).toContain("(allow network*)");
+
+    const isolatedWrite = buildSeatbeltProfile({
+      taskDir: "/private/tmp/task",
+      tempDir: "/private/tmp/task/tmp",
+      worktreePath: "/Users/example/worktree",
+      gitDir: "/Users/example/repo/.git/worktrees/task",
+      isolateConfig: true,
+      gatewayPort: 4321,
+    });
+    expect(isolatedWrite).toContain('(deny file-read-data (subpath "/Users"))');
+    expect(isolatedWrite).toContain('(subpath "/Users/example/worktree")');
+    expect(isolatedWrite).toContain('(subpath "/Users/example/repo/.git/worktrees/task")');
+    expect(isolatedWrite).toContain('(allow network-outbound (remote ip "localhost:4321"))');
+    expect(isolatedWrite).not.toContain("(allow network*)");
   });
 
 

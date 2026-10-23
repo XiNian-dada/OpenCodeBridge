@@ -18,6 +18,13 @@ export interface OpenCodeModel {
   modelID: string;
   providerID: string;
   name?: string;
+  package?: string;
+  settings?: {
+    apiKey?: unknown;
+    baseURL?: unknown;
+    provider?: unknown;
+    [key: string]: unknown;
+  };
   cost?: OpenCodeModelCost[];
   variants?: Array<Record<string, unknown>>;
   [key: string]: unknown;

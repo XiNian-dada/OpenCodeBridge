@@ -23,7 +23,8 @@
     "allowed_repo_roots": ["/Users/you/Code"],
     "require_git_for_writes": true,
     "allow_external_directories": false,
-    "read_sandbox": "auto"
+    "read_sandbox": "auto",
+    "model_gateway": "require"
   },
   "opencode": {
     "binary": "opencode",

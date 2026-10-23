@@ -214,12 +214,12 @@ Status: accepted for Phase 1
 - Read-only OpenCode tasks use a macOS Seatbelt denylist profile by default.
   macOS 26 rejects narrow `file-read` allow lists, so the profile allows runtime
   reads but denies file data under the user home, external mounts, and system
-  temp. Allowed paths are re-allowed after the deny rules. The profile still
-  needs network for the model provider and read access to OpenCode's own
-  auth/config directories; tool access to those directories is denied.
-- The OpenCode child environment is filtered to basic runtime variables and
-  provider key prefixes. Unrelated cloud, SSH, Git-host, and CI credentials are
-  not inherited.
+  temp. Allowed paths are re-allowed after the deny rules. In gateway mode the
+  writable profile applies the same read deny overlay while still allowing the
+  worktree, worktree Git metadata, task data, and isolated config tree.
+- The OpenCode child environment is filtered to basic runtime variables.
+  Provider keys are removed entirely in gateway mode; unrelated cloud, SSH,
+  Git-host, and CI credentials are never inherited.
 - `agent_preflight` validates the repository root, Git top level/HEAD, model
   policy, planned workspace/worktree, effective permissions, isolation, budgets,
   and timeout before a task is created. It reports unverified provider
@@ -244,6 +244,14 @@ Status: accepted for Phase 1
   New spawns, messages, and preflights fail with `PROVIDER_PAUSED`; only the
   local `bridge resume` CLI clears it. The bridge never switches models or
   providers to work around the restriction.
+- A short-lived provider probe reads the selected model's OpenAI-compatible
+  `baseURL` and key. The bridge then starts a per-task localhost gateway and
+  injects a dummy key into OpenCode's custom provider config. The task runs with
+  an isolated HOME/XDG tree, no user MCP/plugin config, and (on macOS) a
+  Seatbelt profile that denies all network except the gateway port. The gateway
+  replaces the dummy key with the real key and forwards `/v1/*` to the provider.
+  `security.model_gateway` defaults to `require`; `auto` falls back to direct
+  access for unsupported providers and `off` disables the gateway.
 
 ## Automatic local conversation display
 

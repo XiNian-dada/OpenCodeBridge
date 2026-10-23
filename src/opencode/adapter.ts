@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -25,14 +26,20 @@ import {
   mapOpenCodeEvent,
 } from "./events.js";
 import { OpenCodeHttpClient, OpenCodeHttpError } from "./http-client.js";
-import { modelCostKnown, resolveOpenCodeModel } from "./model-resolver.js";
+import {
+  findOpenCodeModel,
+  gatewaySettingsFor,
+  modelCostKnown,
+  resolveOpenCodeModel,
+} from "./model-resolver.js";
+import { startModelGateway, type ModelGateway } from "./model-gateway.js";
 import {
   startManagedOpenCodeServer,
   versionMatches,
   type ManagedOpenCodeServer,
   type ManagedOpenCodeServerOptions,
 } from "./process.js";
-import type { OpenCodeMessage, OpenCodeSession } from "./types.js";
+import type { OpenCodeMessage, OpenCodeModel, OpenCodeModelCost, OpenCodeSession } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -103,6 +110,8 @@ interface ActiveRun {
   finished: boolean;
   abortRequested: boolean;
   errorMessage: string | null;
+  gateway: boolean;
+  modelCost: OpenCodeModelCost[] | null;
 }
 
 export interface OpenCodeAdapterOptions {
@@ -137,6 +146,14 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+interface PreparedBackend {
+  gateway: ModelGateway | null;
+  model: OpenCodeModel | null;
+  configContent: Record<string, unknown>;
+  homeDir: string | null;
+  sandbox: ManagedOpenCodeServerOptions["sandbox"];
+}
+
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = "opencode";
   readonly supportsWrites = sandboxAvailable();
@@ -144,11 +161,13 @@ export class OpenCodeAdapter implements AgentAdapter {
   readonly requiresIsolatedWorktree = true;
   private readonly active = new Map<string, ActiveRun>();
   private readonly serverStarter: (options: ManagedOpenCodeServerOptions) => Promise<ManagedOpenCodeServer>;
+  private readonly canProbeGateway: boolean;
 
   constructor(private readonly options: OpenCodeAdapterOptions) {
     this.supportsReadIsolation =
       options.config.security.read_sandbox !== "off" && sandboxAvailable();
     this.serverStarter = options.serverStarter ?? startManagedOpenCodeServer;
+    this.canProbeGateway = options.serverStarter === undefined;
   }
 
   async probe(): Promise<AdapterProbe> {
@@ -246,15 +265,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     const dataDir = resolveDataDir(this.options.config);
     const permissions = permissionsFor(task.read_only);
     const workspace = task.context_path ?? task.worktree_path ?? task.repo_root;
-    const sandbox = task.read_only
-      ? this.supportsReadIsolation
-        ? { mode: "read" as const, worktreePath: workspace }
-        : undefined
-      : {
-          mode: "write" as const,
-          worktreePath: task.worktree_path as string,
-          gitDir: task.worktree_git_dir as string,
-        };
+    let backend = await this.prepareBackend(task, workspace, dataDir, permissions, context);
     let server: ManagedOpenCodeServer | null = null;
     let run: ActiveRun | null = null;
 
@@ -264,12 +275,13 @@ export class OpenCodeAdapter implements AgentAdapter {
         cwd: workspace,
         dataDir,
         taskId: task.opencode_task_id,
-        configContent: { permissions, snapshots: false },
+        configContent: backend.configContent,
         compatibility: this.options.config.opencode.compatibility,
         startupTimeoutMs: this.options.config.opencode.startup_timeout_ms,
         logger: this.options.logger,
         signal: context.signal,
-        ...(sandbox === undefined ? {} : { sandbox }),
+        ...(backend.homeDir === null ? {} : { homeDir: backend.homeDir }),
+        ...(backend.sandbox === undefined ? {} : { sandbox: backend.sandbox }),
       });
 
       context.emit({
@@ -281,19 +293,22 @@ export class OpenCodeAdapter implements AgentAdapter {
           version: server.info.version,
           log_path: server.logPath,
           sandboxed: server.sandboxed,
+          model_gateway: backend.gateway !== null,
         },
       });
       ensureNotAborted(context.signal);
 
-      const model = await resolveOpenCodeModel(server.client, task);
+      const model = backend.model ?? await resolveOpenCodeModel(server.client, task);
+      backend = { ...backend, model };
       context.emit({
         source: "bridge",
         event_type: "opencode.model.resolved",
         payload: {
-          provider_id: model.providerID,
-          model_id: model.modelID,
+          provider_id: task.provider_id,
+          model_id: task.model_id,
           advertised_id: model.id,
           cost_known: modelCostKnown(model),
+          gateway: backend.gateway !== null,
         },
       });
 
@@ -318,8 +333,8 @@ export class OpenCodeAdapter implements AgentAdapter {
         session = await server.client.createSession({
           title: `Bridge ${task.id}`,
           model: {
-            providerID: task.provider_id,
-            id: model.id,
+            providerID: backend.gateway === null ? task.provider_id : "bridge-gateway",
+            id: backend.gateway === null ? model.id : model.modelID,
             ...(variant === undefined ? {} : { variant }),
           },
         });
@@ -335,6 +350,8 @@ export class OpenCodeAdapter implements AgentAdapter {
         finished: false,
         abortRequested: false,
         errorMessage: null,
+        gateway: backend.gateway !== null,
+        modelCost: Array.isArray(model.cost) ? model.cost : null,
       };
       this.active.set(session.id, run);
       ensureNotAborted(context.signal);
@@ -430,6 +447,21 @@ export class OpenCodeAdapter implements AgentAdapter {
           payload: { pid: server.pid, log_path: server.logPath },
         });
       }
+      if (backend.gateway !== null) {
+        try {
+          await backend.gateway.stop();
+          context.emit({
+            source: "bridge",
+            event_type: "opencode.model_gateway.stopped",
+            payload: { upstream: backend.gateway.upstream },
+          });
+        } catch (error) {
+          this.options.logger.warn(
+            { error: error instanceof Error ? error.message : String(error) },
+            "model gateway stop failed",
+          );
+        }
+      }
     }
   }
 
@@ -487,6 +519,158 @@ export class OpenCodeAdapter implements AgentAdapter {
       }),
     );
     this.active.clear();
+  }
+
+  private async prepareBackend(
+    task: TaskRecord,
+    workspace: string,
+    dataDir: string,
+    permissions: ReturnType<typeof permissionsFor>,
+    context: AdapterContext,
+  ): Promise<PreparedBackend> {
+    const directSandbox: ManagedOpenCodeServerOptions["sandbox"] = task.read_only
+      ? this.supportsReadIsolation
+        ? { mode: "read", worktreePath: workspace }
+        : undefined
+      : {
+          mode: "write",
+          worktreePath: task.worktree_path as string,
+          gitDir: task.worktree_git_dir as string,
+        };
+    const direct: PreparedBackend = {
+      gateway: null,
+      model: null,
+      configContent: { permissions, snapshots: false },
+      homeDir: null,
+      sandbox: directSandbox,
+    };
+
+    const mode = this.options.config.security.model_gateway;
+    if (mode === "off" || !this.canProbeGateway) return direct;
+
+    try {
+      const probeId = `${task.id}-probe`;
+      const probe = await this.serverStarter({
+        binary: this.options.config.opencode.binary,
+        cwd: workspace,
+        dataDir,
+        taskId: probeId,
+        configContent: {
+          permissions: [{ action: "*", resource: "*", effect: "deny" }],
+          mcp: {},
+          snapshots: false,
+        },
+        compatibility: this.options.config.opencode.compatibility,
+        startupTimeoutMs: this.options.config.opencode.startup_timeout_ms,
+        logger: this.options.logger,
+        signal: context.signal,
+      });
+
+      let model: OpenCodeModel | undefined;
+      try {
+        model = findOpenCodeModel(await probe.client.models(), task);
+      } finally {
+        await probe.stop();
+        await rm(join(dataDir, "tasks", probeId), { recursive: true, force: true }).catch(() => undefined);
+      }
+      if (context.signal.aborted) {
+        throw new BridgeError("TASK_ABORTED", "OpenCode task was aborted during model probe");
+      }
+      if (model === undefined) {
+        throw new BridgeError(
+          "MODEL_UNAVAILABLE",
+          `OpenCode does not expose model ${task.provider_id}/${task.model_id}`,
+        );
+      }
+
+      const settings = gatewaySettingsFor(model);
+      if (!settings.supported || settings.baseURL === null) {
+        if (mode === "require") {
+          throw new BridgeError(
+            "MODEL_GATEWAY_UNAVAILABLE",
+            settings.reason ?? "This provider cannot be routed through the bridge model gateway",
+          );
+        }
+        context.emit({
+          source: "bridge",
+          event_type: "opencode.model_gateway.unavailable",
+          payload: { reason: settings.reason ?? "unsupported provider" },
+        });
+        return direct;
+      }
+
+      const gateway = await startModelGateway({
+        upstreamBaseUrl: settings.baseURL,
+        apiKey: settings.apiKey,
+        logger: this.options.logger,
+      });
+      try {
+        const homeDir = join(dataDir, "tasks", task.opencode_task_id, "home");
+        const provider = {
+          "bridge-gateway": {
+            npm: "@ai-sdk/openai-compatible",
+            name: "Bridge Gateway",
+            options: {
+              baseURL: gateway.url,
+              apiKey: "bridge-local",
+            },
+            models: {
+              [model.modelID]: { name: model.name ?? model.modelID },
+            },
+          },
+        };
+        const sandbox: ManagedOpenCodeServerOptions["sandbox"] = {
+          mode: task.read_only ? "read" : "write",
+          worktreePath: workspace,
+          ...(task.worktree_git_dir === null ? {} : { gitDir: task.worktree_git_dir }),
+          gatewayPort: gateway.port,
+          isolateConfig: true,
+        };
+
+        context.emit({
+          source: "bridge",
+          event_type: "opencode.model_gateway.started",
+          payload: {
+            port: gateway.port,
+            upstream: gateway.upstream,
+            isolated_config: true,
+          },
+        });
+
+        return {
+          gateway,
+          model,
+          configContent: {
+            permissions,
+            snapshots: false,
+            provider,
+            mcp: {},
+          },
+          homeDir,
+          sandbox,
+        };
+      } catch (error) {
+        await gateway.stop();
+        throw error;
+      }
+    } catch (error) {
+      if (context.signal.aborted) {
+        throw new BridgeError("TASK_ABORTED", "OpenCode task was aborted during model probe");
+      }
+      if (mode === "require") {
+        throw new BridgeError(
+          "MODEL_GATEWAY_UNAVAILABLE",
+          "Bridge model gateway could not be prepared",
+          { cause: error },
+        );
+      }
+      context.emit({
+        source: "bridge",
+        event_type: "opencode.model_gateway.unavailable",
+        payload: { message: error instanceof Error ? error.message : String(error) },
+      });
+      return direct;
+    }
   }
 
   private async consumeEvents(run: ActiveRun, context: AdapterContext): Promise<void> {
@@ -590,7 +774,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       });
     }
 
-    const usage = usageFromSession(session, messages);
+    const usage = usageFromSession(session, messages, run.modelCost, run.gateway);
     const assistantTexts = messages
       .filter((message) => roleOf(message) === "assistant")
       .map((message) => textOf(message))
@@ -607,7 +791,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     try {
       const session = await run.client.session(run.sessionId);
       const messages = includeMessages ? await run.client.messages(run.sessionId, 200) : [];
-      return usageFromSession(session, messages);
+      return usageFromSession(session, messages, run.modelCost, run.gateway);
     } catch {
       return emptyUsage();
     }
@@ -714,28 +898,55 @@ function textOf(message: OpenCodeMessage): string | null {
   return null;
 }
 
-function usageFromSession(session: OpenCodeSession, messages: OpenCodeMessage[]): TaskUsage {
+function usageFromSession(
+  session: OpenCodeSession,
+  messages: OpenCodeMessage[],
+  modelCost: OpenCodeModelCost[] | null = null,
+  gateway = false,
+): TaskUsage {
   const tokens = session.tokens;
   const input = tokens?.input ?? 0;
   const output = tokens?.output ?? 0;
   const reasoning = tokens?.reasoning ?? 0;
-  const cost = typeof session.cost === "number" ? session.cost : null;
+  const cacheRead = tokens?.cache?.read ?? 0;
+  const cacheWrite = tokens?.cache?.write ?? 0;
   const calls = Math.max(
     messages.filter((message) => roleOf(message) === "assistant").length,
     input > 0 || output > 0 ? 1 : 0,
   );
+  const gatewayCost = gateway ? calculateCost(input, output, reasoning, cacheRead, cacheWrite, modelCost) : null;
+  const sessionCost = typeof session.cost === "number" ? session.cost : null;
 
   return {
     input_tokens: input,
     output_tokens: output,
     reasoning_tokens: reasoning,
-    cache_read_tokens: tokens?.cache?.read ?? 0,
-    cache_write_tokens: tokens?.cache?.write ?? 0,
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
     total_tokens: input + output + reasoning,
     model_calls: calls,
-    cost_usd: cost,
-    cost_known: cost !== null,
+    cost_usd: gateway ? gatewayCost : sessionCost,
+    cost_known: gateway ? gatewayCost !== null : sessionCost !== null,
   };
+}
+
+function calculateCost(
+  input: number,
+  output: number,
+  reasoning: number,
+  cacheRead: number,
+  cacheWrite: number,
+  modelCost: OpenCodeModelCost[] | null,
+): number | null {
+  if (modelCost === null || modelCost.length === 0) return null;
+  const rate = modelCost.find((entry) => entry.tier === undefined) ?? modelCost[0];
+  if (rate === undefined) return null;
+  const cost =
+    input * rate.input +
+    (output + reasoning) * rate.output +
+    cacheRead * (rate.cache?.read ?? 0) +
+    cacheWrite * (rate.cache?.write ?? 0);
+  return cost / 1_000_000;
 }
 
 export { READ_ONLY_PERMISSIONS };

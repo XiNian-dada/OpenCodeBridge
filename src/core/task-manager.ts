@@ -135,8 +135,19 @@ export class TaskManager {
             ? "macos_seatbelt"
             : "opencode_permissions_only",
         write_isolation: simulated ? "simulated" : adapter.supportsWrites ? "macos_seatbelt" : "unavailable",
-        network: simulated ? "simulated" : "provider_required",
-        credential_isolation: simulated ? "simulated" : "partial",
+        network: simulated
+          ? "simulated"
+          : config.security.model_gateway === "off"
+            ? "provider_required"
+            : "gateway_only",
+        credential_isolation: simulated
+          ? "simulated"
+          : config.security.model_gateway === "off"
+            ? "partial"
+            : config.security.model_gateway === "require"
+              ? "gateway"
+              : "gateway_configured",
+        model_gateway: config.security.model_gateway,
       },
       limitations: simulated
         ? ["Mock results and tool events are simulated; no real model or code execution."]
@@ -253,6 +264,15 @@ export class TaskManager {
         "Only the listed context files are copied into the task workspace; dependencies are not resolved automatically.",
       );
     }
+    if (config.security.model_gateway === "off") {
+      warnings.push(
+        "Model gateway is disabled; OpenCode can read provider credentials and reach the provider network directly.",
+      );
+    } else if (config.security.model_gateway === "auto") {
+      warnings.push(
+        "Model gateway auto mode may fall back to direct provider credentials/network for unsupported providers.",
+      );
+    }
 
     const unverified = [
       "Provider model availability and quota are checked only when the task starts.",
@@ -260,6 +280,15 @@ export class TaskManager {
       "The bridge does not run tests or independently verify worker claims.",
       "Cost enforcement requires provider-reported cost.",
       ...capabilities.limitations,
+      ...(config.security.model_gateway === "auto"
+        ? [
+            "Provider compatibility with the local model gateway is verified at task start; auto mode may fall back to direct access.",
+          ]
+        : config.security.model_gateway === "require"
+          ? [
+              "Provider compatibility with the local model gateway is verified at task start; unsupported providers fail closed.",
+            ]
+          : []),
       ...(worktreeRequired
         ? ["Worktree creation and the recorded base commit are verified at task start."]
         : []),
@@ -413,6 +442,7 @@ export class TaskManager {
         variant: task.model_variant,
         verified: resolved !== undefined,
         simulated,
+        gateway: resolvedPayload.gateway === true,
       },
       git: {
         available: diff.available,

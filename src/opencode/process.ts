@@ -27,7 +27,15 @@ export interface ManagedOpenCodeServerOptions {
   logger: Logger;
   extraEnv?: Record<string, string>;
   signal?: AbortSignal;
-  sandbox?: { mode?: SandboxMode; worktreePath: string; gitDir?: string };
+  sandbox?: {
+    mode?: SandboxMode;
+    worktreePath: string;
+    gitDir?: string;
+    gatewayPort?: number;
+    isolateConfig?: boolean;
+  };
+  /** Per-task HOME/XDG root; required when sandbox.isolateConfig is true. */
+  homeDir?: string;
 }
 
 export interface ManagedOpenCodeServer {
@@ -75,6 +83,12 @@ export async function startManagedOpenCodeServer(
       tempDir,
       worktreePath: options.sandbox.worktreePath,
       ...(options.sandbox.gitDir === undefined ? {} : { gitDir: options.sandbox.gitDir }),
+      ...(options.sandbox.gatewayPort === undefined
+        ? {}
+        : { gatewayPort: options.sandbox.gatewayPort }),
+      ...(options.sandbox.isolateConfig === undefined
+        ? {}
+        : { isolateConfig: options.sandbox.isolateConfig }),
     });
   }
 
@@ -95,6 +109,31 @@ export async function startManagedOpenCodeServer(
     ...(profilePath === null ? {} : { TMPDIR: tempDir, TMP: tempDir, TEMP: tempDir }),
   };
   if (env.HOME === undefined || env.HOME === "") env.HOME = homedir();
+
+  if (options.sandbox?.isolateConfig === true) {
+    if (options.homeDir === undefined) {
+      throw new BridgeError("INVALID_CONFIG", "Isolated OpenCode config requires homeDir");
+    }
+    const home = options.homeDir;
+    const configHome = join(home, ".config");
+    const dataHome = join(home, ".local", "share");
+    const stateHome = join(home, ".local", "state");
+    const cacheHome = join(home, ".cache");
+    await Promise.all([
+      mkdir(configHome, { recursive: true, mode: 0o700 }),
+      mkdir(dataHome, { recursive: true, mode: 0o700 }),
+      mkdir(stateHome, { recursive: true, mode: 0o700 }),
+      mkdir(cacheHome, { recursive: true, mode: 0o700 }),
+    ]);
+    env.HOME = home;
+    env.XDG_CONFIG_HOME = configHome;
+    env.XDG_DATA_HOME = dataHome;
+    env.XDG_STATE_HOME = stateHome;
+    env.XDG_CACHE_HOME = cacheHome;
+    for (const key of Object.keys(env)) {
+      if (PROVIDER_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) delete env[key];
+    }
+  }
 
   let child: ChildProcess;
   try {

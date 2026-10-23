@@ -8,13 +8,7 @@ export async function resolveOpenCodeModel(
   task: TaskRecord,
 ): Promise<OpenCodeModel> {
   const models = await client.models();
-  const candidates = models.filter(
-    (model) =>
-      model.providerID === task.provider_id &&
-      (model.id === task.model_id || model.modelID === task.model_id),
-  );
-
-  const model = candidates[0];
+  const model = findOpenCodeModel(models, task);
   if (model === undefined) {
     throw new BridgeError(
       "MODEL_UNAVAILABLE",
@@ -30,6 +24,47 @@ export async function resolveOpenCodeModel(
   }
 
   return model;
+}
+
+export function findOpenCodeModel(
+  models: OpenCodeModel[],
+  task: TaskRecord,
+): OpenCodeModel | undefined {
+  return models.find(
+    (model) =>
+      model.providerID === task.provider_id &&
+      (model.id === task.model_id || model.modelID === task.model_id),
+  );
+}
+
+export function gatewaySettingsFor(model: OpenCodeModel): {
+  supported: boolean;
+  baseURL: string | null;
+  apiKey: string | null;
+  reason: string | null;
+} {
+  const baseURL = typeof model.settings?.baseURL === "string" ? model.settings.baseURL : null;
+  const apiKey = typeof model.settings?.apiKey === "string" ? model.settings.apiKey : null;
+  const packageName = typeof model.package === "string" ? model.package : "";
+  if (baseURL === null) {
+    return { supported: false, baseURL: null, apiKey, reason: "provider has no baseURL" };
+  }
+  if (!baseURL.startsWith("http://") && !baseURL.startsWith("https://")) {
+    return { supported: false, baseURL, apiKey, reason: "provider baseURL is not HTTP(S)" };
+  }
+  if (
+    packageName !== "" &&
+    !packageName.includes("openai-compatible") &&
+    !packageName.includes("@ai-sdk/openai")
+  ) {
+    return {
+      supported: false,
+      baseURL,
+      apiKey,
+      reason: `provider package is not OpenAI-compatible: ${packageName}`,
+    };
+  }
+  return { supported: true, baseURL, apiKey, reason: null };
 }
 
 export function modelCostKnown(model: OpenCodeModel): boolean {
