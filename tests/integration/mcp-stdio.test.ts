@@ -140,10 +140,15 @@ describe("MCP stdio server with mock adapter", () => {
       const completed = (waited.json.tasks as Array<Record<string, unknown>>)[0]!;
       expect(completed.status).toBe("completed");
       expect(completed.session_id).toMatch(/^mock_sess_/);
+      expect(completed).not.toHaveProperty("usage");
+      expect(completed.total_tokens).toBe(200);
+      const fullStatus = await callTool(mcp.client, "agent_status", { task_id: taskId, detail: "full" });
+      expect(fullStatus.json.task).toHaveProperty("usage.input_tokens", 120);
 
       const history = await callTool(mcp.client, "agent_history", {
         task_id: taskId,
         limit: 100,
+        include_task: true,
       });
       expect(history.isError).toBe(false);
       const historyTask = history.json.task as Record<string, unknown>;
@@ -155,6 +160,12 @@ describe("MCP stdio server with mock adapter", () => {
       expect(eventTypes).toContain("tool.called");
       expect(eventTypes).toContain("task.completed");
       expect(history.json.total_events).toBeGreaterThan(0);
+      const incremental = await callTool(mcp.client, "agent_history", {
+        task_id: taskId, after: Number(events.at(-1)?.sequence),
+      });
+      expect(incremental.json.events).toEqual([]);
+      expect(incremental.json.task).not.toHaveProperty("task");
+      expect(incremental.json.task_text_omitted).toBe(true);
 
       const followUp = await callTool(mcp.client, "agent_message", {
         task_id: taskId,
@@ -182,6 +193,9 @@ describe("MCP stdio server with mock adapter", () => {
 
       const listed = await callTool(mcp.client, "agent_list", { limit: 10 });
       expect((listed.json.tasks as unknown[]).length).toBe(2);
+      expect((listed.json.tasks as Array<Record<string, unknown>>)[0]).not.toHaveProperty("usage");
+      const fullList = await callTool(mcp.client, "agent_list", { limit: 10, detail: "full" });
+      expect((fullList.json.tasks as Array<Record<string, unknown>>)[0]).toHaveProperty("usage");
 
       const rejected = await callTool(mcp.client, "agent_spawn", {
         ...spawnInput(harness.repoRoot),

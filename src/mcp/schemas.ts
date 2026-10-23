@@ -9,6 +9,8 @@ const repoRoot = z
   .describe("Absolute path to the target Git repository (or an allowed directory for read-only tasks)");
 
 const taskType = z.enum(TASK_TYPES).describe("Task category");
+const taskDetail = z.enum(["summary", "full"]).default("summary")
+  .describe("Compact snapshot by default (result summary capped at 2000 characters); full returns all stored status fields and the complete result summary");
 
 export const AgentSpawnInput = z
   .object({
@@ -41,7 +43,7 @@ export const AgentSpawnInput = z
   })
   .strict();
 
-export const AgentStatusInput = z.object({ task_id: taskId }).strict();
+export const AgentStatusInput = z.object({ task_id: taskId, detail: taskDetail }).strict();
 
 export const AgentCapabilitiesInput = z.object({}).strict();
 
@@ -49,11 +51,14 @@ export const AgentWaitInput = z.object({
   task_ids: z.array(taskId).min(1).max(8).describe("Tasks to wait on; returns when any is terminal or needs permission"),
   timeout_seconds: z.number().int().min(0).max(50).default(30)
     .describe("Maximum wait, independent of task execution timeout; 0 returns immediately"),
+  detail: taskDetail,
 }).strict();
 
 export const AgentHistoryInput = z
   .object({
     task_id: taskId,
+    include_task: z.boolean().default(false)
+      .describe("Include the original task text in the header; omitted by default to avoid repeating it on every page"),
     limit: z.number().int().min(1).max(500).optional().describe("Number of recent events to return"),
     cursor: z
       .string()
@@ -112,6 +117,7 @@ export const AgentDiffInput = z
 
 export const AgentListInput = z
   .object({
+    detail: taskDetail,
     status: z.enum(TASK_STATUSES).optional(),
     repo_root: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
