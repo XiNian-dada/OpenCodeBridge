@@ -46,6 +46,8 @@ export interface HarnessOptions {
   maxQueue?: number;
   defaultTimeoutSeconds?: number;
   maxTimeoutSeconds?: number;
+  maxTokens?: number | null;
+  maxCostUsd?: number | null;
   allowedRoots?: string[];
   repoRoot?: string;
 }
@@ -82,8 +84,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       allow: ["mock/echo"],
       expensive: [],
       allow_expensive: false,
-      max_cost_usd: null,
-      max_tokens: null,
+      max_cost_usd: options.maxCostUsd ?? null,
+      max_tokens: options.maxTokens ?? null,
     },
     security: {
       allowed_repo_roots: allowedRoots,

@@ -405,7 +405,10 @@ function rowToTask(row: Record<string, unknown>): TaskRecord {
     result_summary: row.result_summary === null ? null : String(row.result_summary),
     usage: JSON.parse(String(row.usage_json)) as TaskUsage,
     last_event_sequence: Number(row.last_event_sequence),
-    stop_reason: row.stop_reason === null ? null : (String(row.stop_reason) as "abort" | "timeout"),
+    stop_reason:
+      row.stop_reason === null
+        ? null
+        : (String(row.stop_reason) as "abort" | "timeout" | "budget"),
     cancel_requested_at:
       row.cancel_requested_at === null ? null : String(row.cancel_requested_at),
   };

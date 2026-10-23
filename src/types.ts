@@ -29,7 +29,7 @@ export const TASK_SOURCES = ["codex", "bridge", "opencode", "tool", "system"] as
 
 export type TaskSource = (typeof TASK_SOURCES)[number];
 
-export type StopReason = "abort" | "timeout" | null;
+export type StopReason = "abort" | "timeout" | "budget" | null;
 
 export interface TaskUsage {
   input_tokens: number;

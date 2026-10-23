@@ -38,7 +38,7 @@ import { TaskQueue } from "./task-queue.js";
 interface RunHandle {
   controller: AbortController;
   session: AdapterSession | null;
-  stopReason: "abort" | "timeout" | null;
+  stopReason: "abort" | "timeout" | "budget" | null;
   abortConfirmed: boolean | null;
 }
 
@@ -580,6 +580,15 @@ export class TaskManager {
   private finishRun(task: TaskRecord, handle: RunHandle, result: AdapterRunResult): void {
     const usage = result.usage ?? task.usage;
 
+    if (handle.stopReason === "budget" || this.budgetExceeded(usage)) {
+      this.finalize(task, "failed", {
+        summary: result.summary,
+        usage,
+        error: { code: "BUDGET_EXCEEDED", message: "Task exceeded its configured token or cost budget" },
+      });
+      return;
+    }
+
     if (handle.stopReason === "timeout") {
       this.finalize(task, "timed_out", {
         summary: result.summary,
@@ -624,6 +633,15 @@ export class TaskManager {
 
   private finishRunWithError(task: TaskRecord, handle: RunHandle, error: unknown): void {
     const payload = toErrorPayload(error);
+
+    if (handle.stopReason === "budget") {
+      this.finalize(task, "failed", {
+        summary: null,
+        usage: task.usage,
+        error: { code: "BUDGET_EXCEEDED", message: "Task exceeded its configured token or cost budget" },
+      });
+      return;
+    }
 
     if (handle.stopReason === "timeout") {
       this.finalize(task, "timed_out", {
@@ -715,17 +733,21 @@ export class TaskManager {
   private async requestStop(
     task: TaskRecord,
     handle: RunHandle,
-    reason: "abort" | "timeout",
+    reason: "abort" | "timeout" | "budget",
   ): Promise<boolean> {
     if (handle.stopReason === null) handle.stopReason = reason;
     if (task.stop_reason === null) task.stop_reason = reason;
 
-    if (reason === "abort" && !isTerminal(task.status) && task.status !== "cancelling") {
+    if (
+      (reason === "abort" || reason === "budget") &&
+      !isTerminal(task.status) &&
+      task.status !== "cancelling"
+    ) {
       const previousStatus = task.status;
       this.setStatus(task, "cancelling", "cancelling");
       task.cancel_requested_at = this.now().toISOString();
       this.append(task, "bridge", "task.cancelling", {
-        reason: "user_abort",
+        reason: reason === "budget" ? "budget_exceeded" : "user_abort",
         previous_status: previousStatus,
       });
     }
@@ -733,6 +755,14 @@ export class TaskManager {
     if (reason === "timeout") {
       this.append(task, "bridge", "task.timeout_requested", {
         timeout_seconds: task.timeout_seconds,
+      });
+    }
+
+    if (reason === "budget") {
+      this.append(task, "system", "task.budget_exceeded", {
+        usage: task.usage,
+        max_tokens: this.options.config.models.max_tokens,
+        max_cost_usd: this.options.config.models.max_cost_usd,
       });
     }
 
@@ -771,6 +801,17 @@ export class TaskManager {
       if (usage !== null) {
         task.usage = usage;
         this.store?.saveUsage(task);
+        if (this.budgetExceeded(usage)) {
+          const handle = this.running.get(task.id);
+          if (handle !== undefined && handle.stopReason === null) {
+            void this.requestStop(task, handle, "budget").catch((error: unknown) => {
+              this.options.logger.error(
+                { task_id: task.id, error: toErrorPayload(error) },
+                "budget stop request failed",
+              );
+            });
+          }
+        }
       }
     }
 
@@ -948,6 +989,21 @@ export class TaskManager {
         cause: error,
       });
     }
+  }
+
+  private budgetExceeded(usage: TaskUsage): boolean {
+    const maxTokens = this.options.config.models.max_tokens;
+    if (maxTokens !== null && usage.total_tokens > maxTokens) return true;
+    const maxCost = this.options.config.models.max_cost_usd;
+    if (
+      maxCost !== null &&
+      usage.cost_known &&
+      usage.cost_usd !== null &&
+      usage.cost_usd > maxCost
+    ) {
+      return true;
+    }
+    return false;
   }
 
   private hasActiveLineage(rootTaskId: string): boolean {

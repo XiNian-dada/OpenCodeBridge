@@ -157,6 +157,21 @@ describe("TaskManager with mock adapter", () => {
     }
   });
 
+
+  it("fails a task that exceeds its token budget", async () => {
+    const harness = await createHarness({ maxTokens: 50 });
+    try {
+      const spawned = await harness.services.manager.spawn(spawnInput(harness.repoRoot));
+      const finished = await harness.services.manager.waitForTerminal(spawned.task.task_id, 5000);
+      expect(finished?.status).toBe("failed");
+      expect(finished?.error?.code).toBe("BUDGET_EXCEEDED");
+      const history = harness.services.manager.history(spawned.task.task_id, { limit: 100 });
+      expect(history.events.map((event) => event.event_type)).toContain("task.budget_exceeded");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("times out a task and stops the adapter", async () => {
     const harness = await createHarness({ scenario: "slow", maxTimeoutSeconds: 30 });
     try {
