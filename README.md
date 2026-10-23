@@ -320,7 +320,7 @@ OpenCode turn; those tasks are marked interrupted and preserved for review.
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-The default suite has 81 passing tests. It covers state transitions, queues,
+The default suite has 82 passing tests. It covers state transitions, queues,
 model/path policies, redaction, event pagination, task lifecycle, idempotency,
 timeouts, abort verification, MCP stdio, OpenCode HTTP/SSE, managed process
 startup, worktrees, diffs, session continuation, SQLite persistence, daemon

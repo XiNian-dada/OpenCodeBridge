@@ -114,4 +114,84 @@ describe("bridge daemon", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 30_000);
+  it("marks in-flight tasks interrupted after a daemon crash", async () => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "cob-daemon-crash-")));
+    const repo = await makeGitRepo(dir);
+    const configPath = join(dir, "config.json");
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          adapter: "mock",
+          log_level: "silent",
+          data_dir: join(dir, "data"),
+          scheduler: { max_concurrent: 1, max_queue: 5, default_timeout_seconds: 30 },
+          models: { default: "mock/echo", allow: ["mock/echo"] },
+          security: { allowed_repo_roots: [dir], require_git_for_writes: true },
+          mock: { scenario: "slow", delay_ms: 5 },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig({ path: configPath, env: {} });
+    const paths = daemonPaths(config);
+    let client: IpcTaskClient | null = null;
+    try {
+      client = await ensureDaemon({ config, configPath, logger: createLogger("silent") });
+      const spawned = await client.spawn({
+        task: "crash recovery test",
+        repo_root: repo,
+        task_type: "analysis",
+        model: "mock/echo",
+        read_only: true,
+        timeout_seconds: 30,
+      });
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const view = await client.status(spawned.task.task_id);
+        if (view.status === "running") break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const oldState = await readDaemonState(paths.statePath);
+      expect(oldState).not.toBeNull();
+      if (oldState !== null) {
+        try {
+          process.kill(-oldState.pid, "SIGKILL");
+        } catch {
+          process.kill(oldState.pid, "SIGKILL");
+        }
+      }
+      client.close();
+      client = null;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      client = await ensureDaemon({ config, configPath, logger: createLogger("silent") });
+      const recovered = await client.status(spawned.task.task_id);
+      expect(recovered.status).toBe("interrupted");
+      expect(recovered.error?.code).toBe("SESSION_LOST");
+      const history = await client.history(spawned.task.task_id, { limit: 100 });
+      const events = history.events.map((event) => event.event_type);
+      expect(events).toContain("task.interrupted");
+      expect(events).not.toContain("task.completed");
+    } finally {
+      client?.close();
+      const state = await readDaemonState(paths.statePath);
+      if (state !== null) {
+        try {
+          process.kill(-state.pid, "SIGTERM");
+        } catch {
+          try {
+            process.kill(state.pid, "SIGTERM");
+          } catch {
+            // gone
+          }
+        }
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
 });
