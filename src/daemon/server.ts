@@ -113,6 +113,7 @@ export class IpcServer {
         return this.options.service.history(parsed.task_id, {
           limit: parsed.limit,
           ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+          ...(parsed.after === undefined ? {} : { after: parsed.after }),
           ...(parsed.types === undefined ? {} : { types: parsed.types }),
         });
       }

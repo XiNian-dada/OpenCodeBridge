@@ -74,6 +74,7 @@ export class IpcTaskClient implements TaskService {
       task_id: taskId,
       limit: query.limit,
       ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      ...(query.after === undefined ? {} : { after: query.after }),
       ...(query.types === undefined ? {} : { types: query.types }),
     });
   }
