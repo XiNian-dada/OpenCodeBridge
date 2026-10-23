@@ -106,6 +106,7 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_capabilities",
           "agent_preflight",
           "agent_wait",
+          "agent_events",
           "agent_viewer",
           "agent_status",
           "agent_history",
@@ -182,6 +183,16 @@ describe("MCP stdio server with mock adapter", () => {
       expect(incremental.json.events).toEqual([]);
       expect(incremental.json.task).not.toHaveProperty("task");
       expect(incremental.json.task_text_omitted).toBe(true);
+
+      const eventsPage = await callTool(mcp.client, "agent_events", {
+        task_id: taskId,
+        after: 0,
+        timeout_seconds: 1,
+        limit: 100,
+      });
+      expect(eventsPage.isError).toBe(false);
+      expect((eventsPage.json.events as unknown[]).length).toBeGreaterThan(0);
+      expect(eventsPage.json.task_terminal).toBe(true);
 
       const delivery = await callTool(mcp.client, "agent_delivery", { task_id: taskId });
       expect(delivery.isError).toBe(false);

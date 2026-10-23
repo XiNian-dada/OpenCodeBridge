@@ -13,7 +13,7 @@ keeping task state, prompts, events, and cancellation under bridge control.
 ## What works now
 
 - MCP stdio server (`@modelcontextprotocol/server` v2)
-- Thirteen tools: `agent_viewer`, `agent_capabilities`, `agent_preflight`, `agent_spawn`, `agent_wait`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_delivery`, `agent_abort`, `agent_list`, `agent_cleanup`
+- Fourteen tools: `agent_viewer`, `agent_capabilities`, `agent_preflight`, `agent_spawn`, `agent_wait`, `agent_events`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_delivery`, `agent_abort`, `agent_list`, `agent_cleanup`
 - Automatic local live viewer for delegated tasks, exact recorded prompts, replies, and tool calls
 - Policy/isolation discovery without a model call, preflight validation, bounded batch waiting, and compact task snapshots
 - Verifiable delivery packages with base commit, patch hash, observed commands, actual model resolution, and explicit verification gaps
@@ -404,6 +404,19 @@ Waiting happens inside the daemon and does not call a model or repeatedly send
 status tool results to Codex. Pending waits end on IPC disconnect; the delegated
 tasks continue. Task execution timeouts still come from `agent_spawn`.
 
+### `agent_events`
+
+Long-polls one task for incremental events after a sequence cursor:
+
+```json
+{ "task_id": "task_a", "after": 42, "timeout_seconds": 30, "limit": 100 }
+```
+
+Returns `events`, `next_after`, `timed_out`, `task_terminal`, and `waited_ms`.
+It returns as soon as new events exist, or immediately when the task is terminal
+with no remaining events. A timeout does not stop the task. Use `next_after` for
+the next call. This avoids repeatedly transferring old event pages.
+
 ### `agent_status`
 
 Returns a compact snapshot with status, stage, model, session, duration, total
@@ -487,7 +500,8 @@ status fields. `total` is the number returned, not a count of all stored tasks.
    Git, sandbox, or model-policy errors before queueing work.
 3. agent_list with project/status filters to check for existing work.
 4. agent_spawn for a bounded task worth the handoff cost; use an idempotency key.
-5. agent_wait on the returned task ID(s); continue independent Codex work between waits.
+5. agent_wait on the returned task ID(s); use agent_events with an after cursor for
+   incremental activity while continuing independent Codex work between waits.
    The automatically opened viewer shows the task's conversation and tool activity.
 6. agent_history (incremental after sequence), agent_diff, and agent_delivery to review
    actual activity, changes, patch hash, observed commands, and verification gaps.
@@ -627,8 +641,9 @@ packages. `security.model_gateway: "require"` fails closed for other providers;
 `auto` falls back to direct provider access and is reported as
 `gateway_configured` rather than fully isolated. The short-lived provider probe
 runs before the sandbox so it can read provider settings; it receives no task
-prompt and has MCP disabled. On macOS, the read profile is still a denylist
-overlay rather than a complete filesystem whitelist. On Linux, read-only tasks
+prompt, has MCP and plugins disabled, and does not call a model. On macOS, the
+read profile is still a denylist overlay rather than a complete filesystem
+whitelist. On Linux, read-only tasks
 rely on OpenCode permissions unless OS read isolation is added. When the gateway
 is off or falls back to direct access, writable tasks use the broader write
 profile and can read more of the host. Writable tasks are edit-only, so OpenCode
@@ -654,8 +669,9 @@ inspection, Seatbelt read/write confinement, filtered child environments,
 preflight validation, delivery packages, minimal context snapshots, provider
 pause/resume, and fake OpenCode adapter lifecycles.
 It also checks capability policy reporting, batch wait completion/deadlines,
-permission wakeups, input bounds, read-only defaults, compact/full results, and
-incremental history headers through MCP and daemon IPC.
+permission wakeups, incremental event long-polling, input bounds, read-only
+defaults, compact/full results, and incremental history headers through MCP and
+daemon IPC.
 All default tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a

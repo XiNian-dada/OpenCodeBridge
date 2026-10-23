@@ -4,6 +4,25 @@ import type { Socket } from "node:net";
 import { BridgeError } from "../errors.js";
 import type { Logger } from "../logging.js";
 
+const ALLOWED_PATHS = new Set([
+  "/v1/chat/completions",
+  "/v1/completions",
+  "/v1/responses",
+  "/v1/models",
+  "/v1/embeddings",
+]);
+
+const STRIPPED_HEADERS = new Set([
+  "host",
+  "authorization",
+  "x-api-key",
+  "api-key",
+  "proxy-authorization",
+  "cookie",
+  "content-length",
+  "connection",
+]);
+
 export interface ModelGatewayOptions {
   upstreamBaseUrl: string;
   apiKey: string | null;
@@ -83,6 +102,11 @@ export async function startModelGateway(options: ModelGatewayOptions): Promise<M
       res.end(JSON.stringify({ error: { message: "Only /v1/* is available through this gateway" } }));
       return;
     }
+    if (!ALLOWED_PATHS.has(incoming.pathname)) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Model endpoint is not allowlisted" } }));
+      return;
+    }
     if (req.method !== "GET" && req.method !== "POST") {
       res.writeHead(405, { "allow": "GET, POST", "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "Method not allowed" } }));
@@ -95,7 +119,7 @@ export async function startModelGateway(options: ModelGatewayOptions): Promise<M
     const headers: Record<string, string | string[]> = {};
     for (const [key, value] of Object.entries(req.headers)) {
       if (value === undefined) continue;
-      if (["host", "authorization", "content-length", "connection"].includes(key.toLowerCase())) continue;
+      if (STRIPPED_HEADERS.has(key.toLowerCase())) continue;
       headers[key] = value;
     }
     if (options.apiKey !== null && options.apiKey !== "") {

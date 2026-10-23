@@ -85,6 +85,7 @@ try {
     "agent_capabilities",
     "agent_preflight",
     "agent_wait",
+    "agent_events",
     "agent_viewer",
     "agent_spawn",
     "agent_status",
@@ -127,6 +128,15 @@ try {
   assert(spawned.json.viewer_url === viewer.json.viewer.url, "spawn should expose its automatic viewer");
   const completed = await waitForStatus(taskId, "completed");
   assert(completed.session_id, "missing session ID");
+
+  const eventsPage = await call("agent_events", {
+    task_id: taskId,
+    after: 0,
+    timeout_seconds: 1,
+    limit: 100,
+  });
+  assert(eventsPage.json.events?.length > 0, "agent_events returned no events");
+  assert(eventsPage.json.task_terminal === true, "agent_events did not report terminal task");
 
   const history = await call("agent_history", { task_id: taskId, limit: 100 });
   const eventTypes = history.json.events.map((event) => event.event_type);

@@ -14,6 +14,8 @@ import type {
   BridgeCapabilities,
   WaitTasksInput,
   WaitTasksResult,
+  WaitEventsInput,
+  WaitEventsResult,
   TaskViewerInfo,
   PreflightInput,
   PreflightResult,
@@ -83,6 +85,10 @@ export class IpcTaskClient implements TaskService {
 
   wait(input: WaitTasksInput): Promise<WaitTasksResult> {
     return this.request("wait", input);
+  }
+
+  waitForEvents(input: WaitEventsInput): Promise<WaitEventsResult> {
+    return this.request("events", input);
   }
 
   spawn(input: SpawnTaskInput): Promise<SpawnResult> {

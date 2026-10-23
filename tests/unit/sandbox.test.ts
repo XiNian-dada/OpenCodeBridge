@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -182,6 +183,66 @@ describe("macOS sandbox profile", () => {
       ]);
       expect(await readFile(join(taskDir, "ok.txt"), "utf8")).toBe("ok\n");
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!sandboxAvailable())("allows only the configured gateway port on the network", async () => {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "cob-sandbox-net-")));
+    const allowed = createServer((_req, res) => res.end("allowed"));
+    const denied = createServer((_req, res) => res.end("denied"));
+    try {
+      await new Promise<void>((resolve) => allowed.listen(0, "127.0.0.1", resolve));
+      await new Promise<void>((resolve) => denied.listen(0, "127.0.0.1", resolve));
+      const allowedAddress = allowed.address();
+      const deniedAddress = denied.address();
+      if (
+        allowedAddress === null ||
+        typeof allowedAddress === "string" ||
+        deniedAddress === null ||
+        typeof deniedAddress === "string"
+      ) {
+        throw new Error("failed to bind test servers");
+      }
+
+      const taskDir = join(dir, "task");
+      const workspace = join(dir, "workspace");
+      await mkdir(taskDir);
+      await mkdir(workspace);
+      const profile = await writeSeatbeltProfile({
+        mode: "read",
+        taskDir,
+        tempDir: join(taskDir, "tmp"),
+        worktreePath: workspace,
+        gatewayPort: allowedAddress.port,
+        isolateConfig: true,
+      });
+
+      const ok = await execFileAsync("/usr/bin/sandbox-exec", [
+        "-f",
+        profile,
+        "/usr/bin/curl",
+        "-s",
+        "-m",
+        "2",
+        `http://127.0.0.1:${allowedAddress.port}/`,
+      ]);
+      expect(ok.stdout).toBe("allowed");
+
+      await expect(
+        execFileAsync("/usr/bin/sandbox-exec", [
+          "-f",
+          profile,
+          "/usr/bin/curl",
+          "-s",
+          "-m",
+          "2",
+          `http://127.0.0.1:${deniedAddress.port}/`,
+        ]),
+      ).rejects.toBeTruthy();
+    } finally {
+      await new Promise<void>((resolve) => allowed.close(() => resolve()));
+      await new Promise<void>((resolve) => denied.close(() => resolve()));
       await rm(dir, { recursive: true, force: true });
     }
   });

@@ -123,6 +123,11 @@ export class IpcServer {
       }
       case "wait":
         return this.options.service.wait(parseParams(IpcParams.wait, params), signal);
+      case "events":
+        return this.options.service.waitForEvents(
+          parseParams(IpcParams.events, params),
+          signal,
+        );
       case "spawn":
         return this.options.service.spawn(parseParams(IpcParams.spawn, params));
       case "status":

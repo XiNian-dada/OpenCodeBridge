@@ -93,6 +93,17 @@ export const AgentWaitInput = z.object({
   detail: taskDetail,
 }).strict();
 
+export const AgentEventsInput = z
+  .object({
+    task_id: taskId,
+    after: z.number().int().nonnegative().default(0)
+      .describe("Only return events with a sequence greater than this value"),
+    timeout_seconds: z.number().int().min(0).max(50).default(30)
+      .describe("Maximum long-poll wait; 0 returns immediately. Does not stop the task."),
+    limit: z.number().int().min(1).max(100).default(100),
+  })
+  .strict();
+
 export const AgentHistoryInput = z
   .object({
     task_id: taskId,

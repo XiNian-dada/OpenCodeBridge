@@ -5,11 +5,16 @@ import { startModelGateway } from "../../src/opencode/model-gateway.js";
 
 describe("local model gateway", () => {
   it("forwards /v1 requests, replaces the upstream authorization, and streams the response", async () => {
-    let received: { path?: string; auth?: string; body?: string } = {};
+    let received: { path?: string; auth?: string; apiKey?: string; body?: string } = {};
     const upstream = createServer(async (req, res) => {
       let body = "";
       for await (const chunk of req) body += chunk;
-      received = { path: req.url, auth: req.headers.authorization, body };
+      received = {
+        path: req.url,
+        auth: req.headers.authorization,
+        apiKey: req.headers["x-api-key"] as string | undefined,
+        body,
+      };
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
       res.end("data: [DONE]\n\n");
@@ -28,6 +33,7 @@ describe("local model gateway", () => {
         method: "POST",
         headers: {
           authorization: "Bearer bridge-local",
+          "x-api-key": "dummy-upstream-key",
           "content-type": "application/json",
         },
         body: JSON.stringify({ model: "test", stream: true }),
@@ -36,6 +42,7 @@ describe("local model gateway", () => {
       expect(await response.text()).toContain("data: [DONE]");
       expect(received.path).toBe("/v1/chat/completions");
       expect(received.auth).toBe("Bearer real-secret");
+      expect(received.apiKey).toBeUndefined();
       expect(received.body).toContain('"model":"test"');
     } finally {
       await gateway.stop();
@@ -43,15 +50,15 @@ describe("local model gateway", () => {
     }
   });
 
-  it("rejects paths outside /v1", async () => {
+  it("rejects paths outside the model endpoint allowlist", async () => {
     const gateway = await startModelGateway({
       upstreamBaseUrl: "http://127.0.0.1:1/v1",
       apiKey: null,
       logger: createLogger("silent"),
     });
     try {
-      const response = await fetch(`http://127.0.0.1:${gateway.port}/other`);
-      expect(response.status).toBe(404);
+      expect((await fetch(`http://127.0.0.1:${gateway.port}/other`)).status).toBe(404);
+      expect((await fetch(`http://127.0.0.1:${gateway.port}/v1/admin`)).status).toBe(404);
     } finally {
       await gateway.stop();
     }

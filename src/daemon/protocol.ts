@@ -7,6 +7,7 @@ export const IPC_METHODS = [
   "capabilities",
   "preflight",
   "wait",
+  "events",
   "spawn",
   "status",
   "history",
@@ -79,6 +80,14 @@ const WaitParams = z.object({
   task_ids: z.array(z.string().min(1)).min(1).max(8),
   timeout_seconds: z.number().int().min(0).max(50),
 }).strict();
+const EventsParams = z
+  .object({
+    task_id: z.string().min(1),
+    after: z.number().int().nonnegative(),
+    timeout_seconds: z.number().int().min(0).max(50),
+    limit: z.number().int().min(1).max(100),
+  })
+  .strict();
 const MessageParams = z
   .object({
     task_id: z.string().min(1),
@@ -138,6 +147,7 @@ export const IpcParams = {
   capabilities: z.object({}).strict(),
   preflight: PreflightParams,
   wait: WaitParams,
+  events: EventsParams,
   spawn: SpawnParams,
   status: StatusParams,
   message: MessageParams,

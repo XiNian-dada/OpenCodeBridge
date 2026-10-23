@@ -227,6 +227,21 @@ export interface WaitTasksResult {
   waited_ms: number;
 }
 
+export interface WaitEventsInput {
+  task_id: string;
+  after: number;
+  timeout_seconds: number;
+  limit: number;
+}
+
+export interface WaitEventsResult {
+  events: BridgeEvent[];
+  next_after: number;
+  timed_out: boolean;
+  task_terminal: boolean;
+  waited_ms: number;
+}
+
 export interface BridgeCapabilities {
   adapter: string;
   simulated: boolean;

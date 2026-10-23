@@ -240,6 +240,9 @@ Status: accepted for Phase 1
   manifest. A follow-up turn can add files through `agent_message.context_files`;
   the worker cannot expand its own scope. SQLite schema v2 stores the snapshot
   path and file list.
+- `agent_events` adds a long-polling incremental event channel: it waits for
+  events after a sequence cursor, returns immediately when the task is terminal,
+  and never cancels the task on timeout.
 - Provider authentication, quota, and region errors set a daemon-wide pause.
   New spawns, messages, and preflights fail with `PROVIDER_PAUSED`; only the
   local `bridge resume` CLI clears it. The bridge never switches models or

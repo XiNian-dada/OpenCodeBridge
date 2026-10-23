@@ -15,6 +15,7 @@ import {
   AgentPreflightInput,
   AgentDeliveryInput,
   AgentWaitInput,
+  AgentEventsInput,
   AgentViewerInput,
 } from "./schemas.js";
 
@@ -112,6 +113,33 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
         }, extra.mcpReq.signal);
         return success({
           ok: true, ...result, tasks: result.tasks.map((task) => taskPayload(task, input.detail)),
+        });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "agent_events",
+    {
+      title: "Wait for incremental task events",
+      description: "Long-poll one task for events after a sequence cursor. Returns as soon as new events exist, or immediately when the task is terminal with no more events. Does not stop the task or invoke a model. Use next_after for the next call.",
+      inputSchema: AgentEventsInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (input, extra) => {
+      try {
+        const result = await service.waitForEvents({
+          task_id: input.task_id,
+          after: input.after,
+          timeout_seconds: input.timeout_seconds,
+          limit: input.limit,
+        }, extra.mcpReq.signal);
+        return success({
+          ok: true,
+          ...result,
+          events: result.events as unknown as Array<Record<string, unknown>>,
         });
       } catch (error) {
         return failure(error);

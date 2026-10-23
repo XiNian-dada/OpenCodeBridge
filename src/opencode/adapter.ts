@@ -558,6 +558,8 @@ export class OpenCodeAdapter implements AgentAdapter {
         configContent: {
           permissions: [{ action: "*", resource: "*", effect: "deny" }],
           mcp: {},
+          plugin: [],
+          plugins: [],
           snapshots: false,
         },
         compatibility: this.options.config.opencode.compatibility,
@@ -645,6 +647,8 @@ export class OpenCodeAdapter implements AgentAdapter {
             snapshots: false,
             provider,
             mcp: {},
+            plugin: [],
+            plugins: [],
           },
           homeDir,
           sandbox,

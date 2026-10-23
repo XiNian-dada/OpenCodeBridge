@@ -38,6 +38,8 @@ import type {
   TaskView,
   WaitTasksInput,
   WaitTasksResult,
+  WaitEventsInput,
+  WaitEventsResult,
 } from "../types.js";
 import { emptyUsage } from "../types.js";
 import type {
@@ -504,6 +506,66 @@ export class TaskManager {
           tasks,
           ready_task_ids: ready.map((task) => task.task_id),
           timed_out: ready.length === 0,
+          waited_ms: Math.round(elapsed),
+        };
+      }
+      await delay(Math.min(100, timeoutMs - elapsed), undefined, { signal });
+    }
+  }
+
+  async waitForEvents(
+    input: WaitEventsInput,
+    signal?: AbortSignal,
+  ): Promise<WaitEventsResult> {
+    const task = this.requireTask(input.task_id);
+    if (
+      !Number.isInteger(input.after) ||
+      input.after < 0 ||
+      !Number.isInteger(input.timeout_seconds) ||
+      input.timeout_seconds < 0 ||
+      input.timeout_seconds > 50 ||
+      !Number.isInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100
+    ) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "events wait requires after>=0, timeout 0-50 seconds, and limit 1-100",
+      );
+    }
+    const started = performance.now();
+    const timeoutMs = input.timeout_seconds * 1000;
+    while (true) {
+      signal?.throwIfAborted();
+      const page = this.options.eventStore.list(task.id, {
+        after: input.after,
+        limit: input.limit,
+      });
+      const elapsed = performance.now() - started;
+      if (page.events.length > 0) {
+        return {
+          events: page.events,
+          next_after: page.events.at(-1)?.sequence ?? input.after,
+          timed_out: false,
+          task_terminal: isTerminal(task.status),
+          waited_ms: Math.round(elapsed),
+        };
+      }
+      if (isTerminal(task.status)) {
+        return {
+          events: [],
+          next_after: input.after,
+          timed_out: false,
+          task_terminal: true,
+          waited_ms: Math.round(elapsed),
+        };
+      }
+      if (elapsed >= timeoutMs) {
+        return {
+          events: [],
+          next_after: input.after,
+          timed_out: true,
+          task_terminal: false,
           waited_ms: Math.round(elapsed),
         };
       }

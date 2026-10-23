@@ -210,6 +210,42 @@ describe("delegation discovery and waiting", () => {
     } finally { await h.cleanup(); }
   });
 
+  it("long-polls incremental events with an after cursor", async () => {
+    const h = await createHarness({ delayMs: 100 });
+    try {
+      const { task } = await h.services.service.spawn(spawnInput(h.repoRoot));
+      const first = await h.services.service.waitForEvents({
+        task_id: task.task_id,
+        after: 0,
+        timeout_seconds: 5,
+        limit: 100,
+      });
+      expect(first.timed_out).toBe(false);
+      expect(first.events.length).toBeGreaterThan(0);
+      expect(first.task_terminal).toBe(false);
+      const cursor = first.next_after;
+
+      await h.services.manager.waitForTerminal(task.task_id, 5000);
+      const complete = await h.services.service.waitForEvents({
+        task_id: task.task_id,
+        after: cursor,
+        timeout_seconds: 5,
+        limit: 100,
+      });
+      expect(complete.events.length).toBeGreaterThan(0);
+      expect(complete.events.every((event) => event.sequence > cursor)).toBe(true);
+      expect(complete.task_terminal).toBe(true);
+
+      const idle = await h.services.service.waitForEvents({
+        task_id: task.task_id,
+        after: complete.next_after,
+        timeout_seconds: 1,
+        limit: 100,
+      });
+      expect(idle).toMatchObject({ events: [], timed_out: false, task_terminal: true });
+    } finally { await h.cleanup(); }
+  });
+
   it("validates every target and bounds even for direct service callers", async () => {
     const h = await createHarness();
     try {

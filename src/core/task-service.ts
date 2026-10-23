@@ -14,6 +14,8 @@ import type {
   BridgeCapabilities,
   WaitTasksInput,
   WaitTasksResult,
+  WaitEventsInput,
+  WaitEventsResult,
   TaskViewerInfo,
   PreflightInput,
   PreflightResult,
@@ -41,6 +43,7 @@ export interface TaskService {
   capabilities(): Promise<BridgeCapabilities>;
   preflight(input: PreflightInput): Promise<PreflightResult>;
   wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult>;
+  waitForEvents(input: WaitEventsInput, signal?: AbortSignal): Promise<WaitEventsResult>;
   spawn(input: SpawnTaskInput): Promise<SpawnResult>;
   status(taskId: string): Promise<TaskView>;
   history(taskId: string, query: HistoryQuery): Promise<TaskHistoryResult>;
@@ -89,6 +92,10 @@ export class LocalTaskService implements TaskService {
 
   wait(input: WaitTasksInput, signal?: AbortSignal): Promise<WaitTasksResult> {
     return this.manager.wait(input, signal);
+  }
+
+  waitForEvents(input: WaitEventsInput, signal?: AbortSignal): Promise<WaitEventsResult> {
+    return this.manager.waitForEvents(input, signal);
   }
 
   async spawn(input: SpawnTaskInput): Promise<SpawnResult> {
