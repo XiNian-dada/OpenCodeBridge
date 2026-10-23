@@ -406,19 +406,6 @@ export class TaskManager {
           continue;
         }
 
-        const ended = Date.parse(task.ended_at ?? task.created_at);
-        const ageDays = Number.isFinite(ended) ? (now - ended) / 86_400_000 : 0;
-        if (options.task_ids === undefined && ageDays < worktreeRetentionDays) {
-          actions.push({
-            kind: "worktree",
-            path: task.worktree_path,
-            status: "skipped",
-            reason: "retention",
-            task_id: task.id,
-          });
-          continue;
-        }
-
         try {
           const worktrees = this.options.worktrees;
           if (worktrees === undefined) {
@@ -450,6 +437,19 @@ export class TaskManager {
                 approval_id: approval.id,
               });
             }
+            continue;
+          }
+
+          const ended = Date.parse(task.ended_at ?? task.created_at);
+          const ageDays = Number.isFinite(ended) ? (now - ended) / 86_400_000 : 0;
+          if (options.task_ids === undefined && ageDays < worktreeRetentionDays) {
+            actions.push({
+              kind: "worktree",
+              path: task.worktree_path,
+              status: "skipped",
+              reason: "retention",
+              task_id: task.id,
+            });
             continue;
           }
 
@@ -497,6 +497,11 @@ export class TaskManager {
         for (const entry of entries) {
           if (!entry.isFile() || !entry.name.endsWith(".log") || entry.name === "daemon.log") continue;
           const path = join(logDir, entry.name);
+          const taskId = entry.name.startsWith("opencode-")
+            ? entry.name.slice("opencode-".length, -".log".length)
+            : null;
+          const task = taskId === null ? undefined : this.tasks.get(taskId);
+          if (task !== undefined && !isTerminal(task.status)) continue;
           try {
             const info = await stat(path);
             const ageDays = (now - info.mtimeMs) / 86_400_000;
@@ -556,6 +561,9 @@ export class TaskManager {
     const worktreePath = String(approval.payload.worktree_path);
     const repoRoot = String(approval.payload.repo_root ?? "");
     const baseCommit = String(approval.payload.base_commit ?? "");
+    if (repoRoot === "" || worktreePath === "") {
+      throw new BridgeError("CLEANUP_FAILED", "Cleanup approval is missing repository metadata");
+    }
 
     try {
       let patchPath: string | null = null;
@@ -571,8 +579,11 @@ export class TaskManager {
         }
       }
 
-      if (repoRoot !== "") {
-        await this.options.worktrees?.forceRemove(worktreePath, repoRoot);
+      const removed = await this.options.worktrees?.forceRemove(worktreePath, repoRoot);
+      if (removed === undefined || !removed.removed) {
+        throw new BridgeError("CLEANUP_FAILED", "Worktree removal was refused", {
+          details: { worktree_path: worktreePath, reason: removed?.reason },
+        });
       }
       this.store?.consumeApproval(approvalId);
       approval.consumed_at = this.now().toISOString();
