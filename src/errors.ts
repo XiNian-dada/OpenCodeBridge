@@ -28,6 +28,7 @@ export const ERROR_CODES = [
   "SESSION_LOST",
   "ADAPTER_ERROR",
   "NOT_IMPLEMENTED",
+  "STORAGE_ERROR",
   "INTERNAL_ERROR",
 ] as const;
 

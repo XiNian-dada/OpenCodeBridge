@@ -13,6 +13,7 @@ import type { Logger } from "./logging.js";
 import { ModelPolicy } from "./policy/model-policy.js";
 import { PathPolicy } from "./policy/path-policy.js";
 import { resolveDataDir } from "./paths.js";
+import type { SqliteStore } from "./storage/sqlite-store.js";
 
 export interface BridgeServices extends ToolServices {
   adapter: AgentAdapter;
@@ -39,6 +40,7 @@ export function createServices(
   config: BridgeConfig,
   adapter: AgentAdapter,
   logger: Logger,
+  store?: SqliteStore,
 ): BridgeServices {
   const redactor = new Redactor({ maxStringChars: config.history.max_payload_chars });
   const eventStore = new EventStore({
@@ -64,6 +66,7 @@ export function createServices(
     logger,
     worktrees,
     diffs,
+    ...(store === undefined ? {} : { store }),
   });
 
   return { config, adapter, manager, logger, service: new LocalTaskService(manager) };

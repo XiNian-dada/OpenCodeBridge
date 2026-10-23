@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import type { BridgeConfig } from "../config.js";
 import type { DiffManager } from "../git/diff-manager.js";
 import type { TaskDiffResult, TaskHistoryResult } from "./task-service.js";
+import type { SqliteStore } from "../storage/sqlite-store.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
 import { BridgeError, isBridgeError, toErrorPayload } from "../errors.js";
 import type { Logger } from "../logging.js";
@@ -50,6 +51,7 @@ export interface TaskManagerOptions {
   logger: Logger;
   worktrees?: WorktreeManager;
   diffs?: DiffManager;
+  store?: SqliteStore;
   now?: () => Date;
   idFactory?: () => string;
 }
@@ -61,12 +63,15 @@ export class TaskManager {
   private readonly running = new Map<string, RunHandle>();
   private readonly now: () => Date;
   private readonly idFactory: () => string;
+  private readonly store: SqliteStore | undefined;
   private shuttingDown = false;
 
   constructor(private readonly options: TaskManagerOptions) {
     this.queue = new TaskQueue(options.config.scheduler.max_queue);
     this.now = options.now ?? (() => new Date());
     this.idFactory = options.idFactory ?? (() => `task_${randomUUID()}`);
+    this.store = options.store;
+    if (this.store !== undefined) this.recoverFromStore();
   }
 
   async spawn(input: SpawnTaskInput): Promise<SpawnResult> {
@@ -146,6 +151,7 @@ export class TaskManager {
       status: "queued",
       stage: "queued",
       session_id: null,
+      server_pid: null,
       worktree_path: null,
       worktree_git_dir: null,
       base_commit: repo.base_commit,
@@ -258,6 +264,7 @@ export class TaskManager {
       status: "queued",
       stage: "queued",
       session_id: parent.session_id,
+      server_pid: null,
       worktree_path: parent.worktree_path,
       worktree_git_dir: parent.worktree_git_dir,
       base_commit: parent.base_commit,
@@ -487,6 +494,7 @@ export class TaskManager {
       onSession: (session: AdapterSession) => {
         handle.session = session;
         task.session_id = session.id;
+        task.server_pid = session.server_pid ?? null;
         task.worktree_path = session.worktree_path;
         if (task.status === "preparing") {
           this.setStatus(task, "running", "running");
@@ -497,6 +505,8 @@ export class TaskManager {
           provider_id: session.provider_id,
           worktree_path: session.worktree_path,
         });
+        this.store?.saveSession(task);
+        this.store?.saveTask(task);
         this.options.logger.info({ task_id: task.id, session_id: session.id }, "session created");
       },
       emit: (event: AdapterEventInput) => this.handleAdapterEvent(task, event),
@@ -550,6 +560,8 @@ export class TaskManager {
     task.worktree_path = result.path;
     task.worktree_git_dir = result.git_dir;
     task.base_commit = result.base_commit;
+    this.store?.saveWorktree(task);
+    this.store?.saveTask(task);
 
     this.append(task, "bridge", "worktree.created", {
       worktree_path: result.path,
@@ -672,6 +684,8 @@ export class TaskManager {
     task.error_code = options.error?.code ?? null;
     task.error_message = options.error?.message ?? null;
     task.stop_reason = null;
+    this.store?.saveUsage(task);
+    this.store?.saveTask(task);
 
     const eventType =
       status === "completed"
@@ -754,7 +768,10 @@ export class TaskManager {
 
     if (event.event_type === "usage.updated") {
       const usage = parseUsage(event.payload.usage);
-      if (usage !== null) task.usage = usage;
+      if (usage !== null) {
+        task.usage = usage;
+        this.store?.saveUsage(task);
+      }
     }
 
     if (event.event_type === "permission.requested" && task.status === "running") {
@@ -782,6 +799,7 @@ export class TaskManager {
       options,
     );
     task.last_event_sequence = event.sequence;
+    this.persistEvent(task, event);
     return event;
   }
 
@@ -793,6 +811,7 @@ export class TaskManager {
     assertTransition(task.status, status);
     task.status = status;
     task.stage = stage;
+    this.store?.saveTask(task);
   }
 
   private requireTask(taskId: string): TaskRecord {
@@ -871,6 +890,66 @@ export class TaskManager {
     };
   }
 
+  private persistEvent(task: TaskRecord, event: BridgeEvent): void {
+    if (this.store === undefined) return;
+    try {
+      this.store.saveTask(task);
+      this.store.appendEvent(event);
+      this.store.saveTask(task);
+    } catch (error) {
+      this.options.logger.error(
+        { task_id: task.id, error: toErrorPayload(error) },
+        "failed to persist event",
+      );
+      throw new BridgeError("STORAGE_ERROR", "Failed to persist task event", {
+        cause: error,
+        details: { task_id: task.id, sequence: event.sequence },
+      });
+    }
+  }
+
+  private recoverFromStore(): void {
+    const store = this.store;
+    if (store === undefined) return;
+    try {
+      const tasks = store.loadTasks();
+      const events = store.loadEvents();
+      this.options.eventStore.hydrate(events);
+      for (const task of tasks) {
+        this.tasks.set(task.id, task);
+        if (task.idempotency_key !== null) this.idempotency.set(task.idempotency_key, task.id);
+      }
+
+      for (const task of tasks) {
+        if (isTerminal(task.status)) continue;
+        const previousStatus = task.status;
+        if (task.server_pid !== null) {
+          killProcessGroup(task.server_pid);
+        }
+        task.status = "interrupted";
+        task.stage = "interrupted";
+        task.ended_at = this.now().toISOString();
+        task.error_code = "SESSION_LOST";
+        task.error_message = "Bridge daemon restarted before the task completed";
+        task.stop_reason = null;
+        this.append(task, "system", "task.interrupted", {
+          reason: "daemon_restart",
+          previous_status: previousStatus,
+          server_pid: task.server_pid,
+        });
+        this.store?.saveTask(task);
+      }
+      this.options.logger.info(
+        { recovered_tasks: tasks.length, recovered_events: events.length },
+        "task state recovered from SQLite",
+      );
+    } catch (error) {
+      throw new BridgeError("STORAGE_ERROR", "Failed to recover task state from SQLite", {
+        cause: error,
+      });
+    }
+  }
+
   private hasActiveLineage(rootTaskId: string): boolean {
     for (const task of this.tasks.values()) {
       if (task.root_task_id === rootTaskId && !isTerminal(task.status)) return true;
@@ -909,4 +988,25 @@ function parseUsage(value: unknown): TaskUsage | null {
     cost_usd: usage.cost_usd ?? null,
     cost_known: usage.cost_known ?? usage.cost_usd !== null,
   };
+}
+
+function killProcessGroup(pid: number): void {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return;
+  }
+  try {
+    if (process.platform === "win32") {
+      process.kill(pid, "SIGTERM");
+    } else {
+      process.kill(-pid, "SIGTERM");
+    }
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process already exited.
+    }
+  }
 }

@@ -24,6 +24,18 @@ export class EventStore {
     this.now = options.now ?? (() => new Date());
   }
 
+  hydrate(events: readonly BridgeEvent[]): void {
+    this.eventsByTask.clear();
+    for (const event of events) {
+      const list = this.eventsByTask.get(event.task_id) ?? [];
+      list.push(event);
+      this.eventsByTask.set(event.task_id, list);
+    }
+    for (const list of this.eventsByTask.values()) {
+      list.sort((a, b) => a.sequence - b.sequence);
+    }
+  }
+
   append(
     taskId: string,
     sessionId: string | null,
