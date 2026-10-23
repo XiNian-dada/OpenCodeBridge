@@ -29,6 +29,7 @@ export const ERROR_CODES = [
   "ADAPTER_ERROR",
   "NOT_IMPLEMENTED",
   "STORAGE_ERROR",
+  "DAEMON_UNAVAILABLE",
   "INTERNAL_ERROR",
 ] as const;
 
