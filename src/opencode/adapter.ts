@@ -513,6 +513,9 @@ export class OpenCodeAdapter implements AgentAdapter {
       };
     }
 
+    // The live 2.1 API lists newest messages first; mocks/older APIs may not.
+    // Sort chronologically before selecting the latest assistant answer.
+    messages.sort((a, b) => messageCreatedAt(a) - messageCreatedAt(b));
     for (const message of messages.slice(-50)) {
       const role = roleOf(message);
       const text = textOf(message);
@@ -613,6 +616,15 @@ function roleOf(message: OpenCodeMessage): "user" | "assistant" | null {
   }
 
   return null;
+}
+
+function messageCreatedAt(message: OpenCodeMessage): number {
+  const time = message.time;
+  if (typeof time === "object" && time !== null) {
+    const created = (time as Record<string, unknown>).created;
+    if (typeof created === "number" && Number.isFinite(created)) return created;
+  }
+  return 0;
 }
 
 function textOf(message: OpenCodeMessage): string | null {

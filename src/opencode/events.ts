@@ -8,24 +8,29 @@ export interface MappedOpenCodeEvent {
 }
 
 const toolEvents: Record<string, { eventType: string; source: TaskSource }> = {
-  "session.next.tool.called": { eventType: "tool.called", source: "tool" },
-  "session.next.tool.progress": { eventType: "tool.progress", source: "tool" },
-  "session.next.tool.success": { eventType: "tool.completed", source: "tool" },
-  "session.next.tool.failed": { eventType: "tool.failed", source: "tool" },
-  "session.next.shell.started": { eventType: "shell.started", source: "tool" },
-  "session.next.shell.ended": { eventType: "shell.ended", source: "tool" },
+  "session.tool.called": { eventType: "tool.called", source: "tool" },
+  "session.tool.progress": { eventType: "tool.progress", source: "tool" },
+  "session.tool.success": { eventType: "tool.completed", source: "tool" },
+  "session.tool.failed": { eventType: "tool.failed", source: "tool" },
+  "session.shell.started": { eventType: "shell.started", source: "tool" },
+  "session.shell.ended": { eventType: "shell.ended", source: "tool" },
 };
 
 const stepEvents = new Set([
-  "session.next.step.started",
-  "session.next.step.ended",
-  "session.next.step.failed",
-  "session.next.prompt.admitted",
-  "session.next.prompted",
-  "session.next.retried",
-  "session.next.compaction.started",
-  "session.next.compaction.ended",
+  "session.step.started",
+  "session.step.ended",
+  "session.step.failed",
+  "session.prompt.admitted",
+  "session.prompted",
+  "session.retried",
+  "session.compaction.started",
+  "session.compaction.ended",
 ]);
+
+// OpenCode 2.1.2 emits session.tool/step/text.*; retain older session.next.* support.
+function canonicalType(type: string): string {
+  return type.replace(/^session\.next\./, "session.");
+}
 
 export function sessionIdFromEvent(event: OpenCodeEvent): string | null {
   return findString(event.data, "sessionID");
@@ -42,7 +47,8 @@ export function isIdleEvent(event: OpenCodeEvent): boolean {
 }
 
 export function isErrorEvent(event: OpenCodeEvent): boolean {
-  return event.type === "session.error" || event.type === "session.next.step.failed";
+  const type = canonicalType(event.type);
+  return type === "session.error" || type === "session.step.failed" || type === "session.execution.failed";
 }
 
 export function eventErrorMessage(event: OpenCodeEvent): string {
@@ -54,7 +60,8 @@ export function eventErrorMessage(event: OpenCodeEvent): string {
 }
 
 export function mapOpenCodeEvent(event: OpenCodeEvent): MappedOpenCodeEvent | null {
-  const tool = toolEvents[event.type];
+  const type = canonicalType(event.type);
+  const tool = toolEvents[type];
   if (tool !== undefined) {
     return {
       source: tool.source,
@@ -103,10 +110,10 @@ export function mapOpenCodeEvent(event: OpenCodeEvent): MappedOpenCodeEvent | nu
     };
   }
 
-  if (stepEvents.has(event.type)) {
+  if (stepEvents.has(type)) {
     return {
       source: "opencode",
-      event_type: `opencode.${event.type.slice("session.next.".length)}`,
+      event_type: `opencode.${type.slice("session.".length)}`,
       payload: asPayload(event.data),
     };
   }
@@ -115,8 +122,8 @@ export function mapOpenCodeEvent(event: OpenCodeEvent): MappedOpenCodeEvent | nu
     event.type === "message.updated" ||
     event.type === "message.part.updated" ||
     event.type === "message.part.delta" ||
-    event.type.startsWith("session.next.text.") ||
-    event.type.startsWith("session.next.reasoning.")
+    type.startsWith("session.text.") ||
+    type.startsWith("session.reasoning.")
   ) {
     return null;
   }

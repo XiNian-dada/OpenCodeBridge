@@ -32,7 +32,7 @@ describe("OpenCode HTTP client", () => {
       await client.prompt(session.id, { text: "hello" });
       await stream;
 
-      expect(seen).toContain("session.next.tool.called");
+      expect(seen).toContain("session.tool.called");
       expect(seen).toContain("session.idle");
 
       const messages = await client.messages(session.id);

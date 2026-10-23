@@ -157,6 +157,7 @@ describe("OpenCodeAdapter", () => {
       const first = await harness.services.manager.spawn(input(harness.tempDir));
       const completed = await harness.services.manager.waitForTerminal(first.task.task_id, 5000);
       expect(completed?.session_id).not.toBeNull();
+      expect(completed?.result_summary).toBe("Fake task completed turn 1");
 
       const followUp = await harness.services.manager.message(
         first.task.task_id,
@@ -168,11 +169,16 @@ describe("OpenCodeAdapter", () => {
       const child = await harness.services.manager.waitForTerminal(followUp.task.task_id, 5000);
       expect(child?.status).toBe("completed");
       expect(child?.session_id).toBe(completed?.session_id);
+      expect(child?.result_summary).toBe("Fake task completed turn 2");
 
       const history = harness.services.manager.history(followUp.task.task_id, { limit: 100 });
       const types = history.events.map((event) => event.event_type);
       expect(types).toContain("task.resumed");
       expect(types).toContain("opencode.session.resumed");
+      const replies = history.events.filter((event) => event.event_type === "opencode.message" && event.payload.role === "assistant");
+      expect(replies.map((event) => event.payload.text)).toEqual([
+        "Fake task completed turn 1", "Fake task completed turn 2",
+      ]);
     } finally {
       await harness.cleanup();
     }

@@ -44,10 +44,12 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
   }
 
   function complete(session: FakeSession): void {
+    const turn = session.messages.filter((message) => message.type === "user").length;
     session.messages.push({
-      id: "msg_assistant",
+      id: `msg_assistant_${turn}`,
+      time: { created: Date.now() },
       type: "assistant",
-      content: [{ type: "text", text: "Fake task completed" }],
+      content: [{ type: "text", text: `Fake task completed turn ${turn}` }],
     });
     session.tokens = {
       input: 10,
@@ -152,7 +154,7 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
       }
 
       if (req.method === "GET" && segments[3] === "message") {
-        json(res, 200, { data: session.messages, cursor: { previous: null, next: null } });
+        json(res, 200, { data: [...session.messages].reverse(), cursor: { previous: null, next: null } });
         return;
       }
 
@@ -162,6 +164,7 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
         session.updated = Date.now();
         session.messages.push({
           id: `msg_${randomUUID()}`,
+          time: { created: Date.now() },
           type: "user",
           payload: { text: body.text },
         });
@@ -169,12 +172,12 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
 
         if (scenario === "success") {
           setTimeout(() => {
-            emit(session.id, "session.next.tool.called", {
+            emit(session.id, "session.tool.called", {
               callID: "call_1",
               tool: "bash",
               input: { command: "echo fake" },
             });
-            emit(session.id, "session.next.tool.success", {
+            emit(session.id, "session.tool.success", {
               callID: "call_1",
               tool: "bash",
               output: "fake",

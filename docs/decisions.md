@@ -188,3 +188,16 @@ Status: accepted for Phase 1
   untrusted data, and direct Codex to stop on account/quota/region errors.
   A persistent daemon-wide account circuit breaker, stronger filesystem read
   isolation, and per-file write authorization remain outside this change.
+
+### Live verification follow-up
+
+- A real read-only task and same-session follow-ups were exercised with the
+  locally allowlisted `opencode/deepseek-v4.1-flash-free` on OpenCode 2.1.2.
+  The task read only `package.json`; the provider reported zero cost.
+- Live SSE uses `session.tool.*`, `session.step.*`, and `session.text.*` names.
+  The event adapter now accepts these alongside the older `session.next.*`
+  family, preserving tool payloads and omitting redundant text deltas.
+- Live message pages are newest-first and expose `time.created`. Final readback
+  now orders messages by that timestamp before selecting the latest answer;
+  otherwise a follow-up could return an older turn's answer as its summary.
+  Fake API fixtures now reproduce this ordering and distinct turn replies.
