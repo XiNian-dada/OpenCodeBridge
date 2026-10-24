@@ -10,7 +10,7 @@ import { resolveDataDir } from "../paths.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
 import { BridgeError, isBridgeError, toErrorPayload } from "../errors.js";
 import type { Logger } from "../logging.js";
-import type { ModelPolicy } from "../policy/model-policy.js";
+import { isProviderPattern, type ModelPolicy } from "../policy/model-policy.js";
 import type { PathPolicy } from "../policy/path-policy.js";
 import type {
   AbortTaskResult,
@@ -110,7 +110,7 @@ export class TaskManager {
         default: config.models.default,
         allowed: config.models.allow.map((model) => {
           try {
-            modelPolicy.resolve(model);
+            if (!isProviderPattern(model)) modelPolicy.resolve(model);
             return { model, permitted: true, error_code: null };
           } catch (error) {
             return { model, permitted: false, error_code: toErrorPayload(error).code };
@@ -1633,7 +1633,7 @@ export class TaskManager {
 
   private handleAdapterEvent(task: TaskRecord, event: AdapterEventInput): void {
     // Assistant replies are conversation content, not compact audit metadata.
-    // Keep them up to the delegation limit so the viewer can show the full answer.
+    // EventStore preserves redacted conversation/tool content in full.
     this.append(
       task,
       event.source,

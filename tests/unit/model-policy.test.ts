@@ -49,6 +49,24 @@ describe("ModelPolicy", () => {
     expect(policy.resolve("vendor/expensive").expensive).toBe(true);
   });
 
+  it("allows every Go model and variants while preserving provider boundaries", () => {
+    const policy = new ModelPolicy({ ...base, allow: ["opencode-go/*"] });
+    for (const id of ["deepseek-v4.1-flash", "deepseek-v4-pro", "future-model#fast"]) {
+      expect(policy.resolve(`opencode-go/${id}`).provider_id).toBe("opencode-go");
+    }
+    for (const id of ["opencode/model", "opencode-go-evil/model", "evil/opencode-go/model"]) {
+      expect(() => policy.resolve(id)).toThrowError(expect.objectContaining({ code: "MODEL_NOT_ALLOWED" }));
+    }
+    expect(() => policy.resolve("opencode-go/*")).toThrowError(expect.objectContaining({ code: "INVALID_ARGUMENT" }));
+  });
+
+  it("retains expensive-model authorization under a provider allow pattern", () => {
+    const policy = new ModelPolicy({ ...base, allow: ["opencode-go/*"], expensive: ["opencode-go/deepseek-v4-pro"] });
+    expect(() => policy.resolve("opencode-go/deepseek-v4-pro")).toThrowError(
+      expect.objectContaining({ code: "MODEL_UPGRADE_REQUIRED" }),
+    );
+  });
+
   it("rejects missing defaults and malformed ids", () => {
     expect(() => new ModelPolicy({ ...base, default: null }).resolve()).toThrowError(
       expect.objectContaining({ code: "MODEL_NOT_ALLOWED" }),

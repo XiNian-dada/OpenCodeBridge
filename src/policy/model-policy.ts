@@ -10,6 +10,15 @@ export interface ResolvedModel {
   cost_known: boolean;
 }
 
+export function isProviderPattern(value: string): boolean {
+  return /^[^/*#]+\/\*$/.test(value);
+}
+
+function matches(entries: string[], model: string, base: string): boolean {
+  return entries.some((entry) => entry === model || entry === base ||
+    (isProviderPattern(entry) && base.startsWith(entry.slice(0, -1))));
+}
+
 export class ModelPolicy {
   constructor(private readonly config: BridgeConfig["models"]) {}
 
@@ -27,14 +36,17 @@ export class ModelPolicy {
     const base = hashIndex === -1 ? model : model.slice(0, hashIndex);
     const variant = hashIndex === -1 ? null : model.slice(hashIndex + 1);
 
-    const allowed = this.config.allow.includes(model) || this.config.allow.includes(base);
+    if (base.includes("*")) {
+      throw new BridgeError("INVALID_ARGUMENT", "A concrete provider/model ID is required");
+    }
+    const allowed = matches(this.config.allow, model, base);
     if (!allowed) {
       throw new BridgeError("MODEL_NOT_ALLOWED", `Model is not in the allowlist: ${model}`, {
         details: { model, allow: this.config.allow },
       });
     }
 
-    const expensive = this.config.expensive.includes(model) || this.config.expensive.includes(base);
+    const expensive = matches(this.config.expensive, model, base);
     if (expensive && !this.config.allow_expensive) {
       throw new BridgeError(
         "MODEL_UPGRADE_REQUIRED",

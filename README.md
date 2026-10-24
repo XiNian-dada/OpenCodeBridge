@@ -142,7 +142,10 @@ root with a real absolute path.
   HOME/XDG tree, no user config/MCP servers, and network access only to that
   gateway. `auto` falls back to direct provider access for unsupported
   providers; `off` disables the gateway and restores direct access.
-- `models.allow` is an exact allowlist. A model not in it is rejected with
+- `models.allow` accepts exact IDs and provider patterns such as `opencode-go/*`.
+  OpenCode defaults to all Go models with `opencode-go/deepseek-v4.1-flash` as
+  the default; explicit allowlists remain authoritative. Other providers require
+  their own entries. A model not in the allowlist is rejected with
   `MODEL_NOT_ALLOWED`.
 - Models listed in `models.expensive` require `models.allow_expensive: true`.
   The bridge never upgrades models automatically.
@@ -271,31 +274,37 @@ codex mcp list
 
 ### Live conversation viewer / `agent_viewer`
 
-Real OpenCode tasks automatically open a local conversation viewer when they
-are created. The viewer follows new tasks and follow-up turns, shows the latest
+After each spawn or follow-up, Codex uses the returned `viewer_url` with
+`open_in_codex` to show or reuse the viewer in its in-app browser. The daemon
+never opens the system browser. The viewer follows new tasks and follow-up turns, shows the latest
 100 turns grouped into conversations by root task, and polls the existing audit
 records every second (every five seconds while its tab is in the background).
+Inactive conversations use gray text and completed dots; conversations with an
+active turn keep their normal emphasis. All active conversations remain visible;
+only the latest five inactive conversations appear by default, with older ones
+under **更早的历史会话**.
 The transcript uses a chat layout: Codex delegation and follow-up instructions
 appear on the right, OpenCode replies on the left, and tool activity is shown as
 collapsible cards. The interface follows a monochrome Vercel/Geist-style visual
 system with light and dark modes. Multi-turn work stays in one conversation, so
 a follow-up turn does not replace the earlier context. Replies appear after OpenCode's
 message readback completes; token-by-token reply streaming is not implemented.
-Long messages start collapsed with an **展开完整内容** control, so the transcript
-stays scannable. Expand the actual prompt or a tool result to inspect its
-recorded content, or enable **全部审计事件** for system events and session message
-readbacks. Existing redaction and truncation limits still apply.
+Conversation messages display in full by default. Bash output opens automatically
+and reveals another segment (up to 80 lines / 6000 characters) per **展开下一段**
+click. Output expansion survives polling. New conversation and tool events retain
+their full redacted text; ordinary audit metadata still has size limits. Previously
+truncated records and output truncated upstream cannot be recovered. Expand the
+actual prompt or enable **全部审计事件** to inspect system events.
 
 An already-polling viewer follows new tasks without opening duplicate tabs.
 Selecting an older task pauses automatic following; re-enable **自动跟随**
-to follow again. If the tab was closed, the next task reopens it once no viewer
-heartbeat has been received for ten seconds. Automatic opening uses the default
-browser on macOS/Linux. `agent_viewer` returns the private URL without a model
-call; Codex can use `open_in_codex` to place it beside the chat. This is a local
-web viewer, not a native Codex subagent conversation.
+to follow again. `agent_viewer` returns the private URL without a model call;
+Codex uses `open_in_codex` to show it beside the chat. Automatic in-app opening
+requires a host with this tool and the coordinating agent following the MCP
+instructions; a standalone MCP daemon cannot open a Codex panel itself.
 
 ```bash
-bridge viewer          # reopen the live viewer; no export needed
+bridge viewer          # print the private URL; never launch a system browser
 bridge viewer --json   # get its private local URL without opening a browser
 ```
 
@@ -304,17 +313,17 @@ disconnect. It binds only to `127.0.0.1` on an ephemeral port and serves no writ
 or command endpoints. API requests require a random read-only capability from
 the URL fragment, checked in an Authorization header. Host/Origin checks, a
 same-origin CSP and plain-text rendering protect the log display. Keep its URL
-private. Daemon restart rotates the port/key; use `bridge viewer` to reopen.
+private. Daemon restart rotates the port/key; retrieve the new URL with `bridge viewer`.
 
 Local config controls:
 
 ```json
-{ "viewer": { "enabled": true, "auto_open": true } }
+{ "viewer": { "enabled": true, "auto_open": false } }
 ```
 
-`enabled` defaults to true; `auto_open` defaults to true for the real OpenCode
-adapter and false for mocks. Use false for headless hosts. In-process test mode
-does not start a viewer. Opening failures preserve tasks and their audit records.
+`enabled` defaults to true. Legacy `auto_open` settings are accepted but ignored
+(normalized to false), including old configurations with true. In-process test
+mode does not start a viewer. `bridge viewer` only prints its URL.
 
 ### `agent_capabilities`
 
@@ -502,7 +511,7 @@ status fields. `total` is the number returned, not a count of all stored tasks.
 4. agent_spawn for a bounded task worth the handoff cost; use an idempotency key.
 5. agent_wait on the returned task ID(s); use agent_events with an after cursor for
    incremental activity while continuing independent Codex work between waits.
-   The automatically opened viewer shows the task's conversation and tool activity.
+   The Codex in-app viewer shows the task's conversation and tool activity.
 6. agent_history (incremental after sequence), agent_diff, and agent_delivery to review
    actual activity, changes, patch hash, observed commands, and verification gaps.
 7. Run relevant tests yourself and integrate only reviewed changes.

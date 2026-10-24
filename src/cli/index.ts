@@ -7,7 +7,6 @@ import { toErrorPayload } from "../errors.js";
 import { createLogger } from "../logging.js";
 import type { BridgeEvent, TaskStatus, TaskView } from "../types.js";
 import { TASK_STATUSES } from "../types.js";
-import { openViewerUrl } from "../viewer/server.js";
 
 interface Parsed {
   command: string | undefined;
@@ -27,7 +26,6 @@ async function main(): Promise<void> {
     try {
       const viewer = await client.viewer();
       if (viewer.url === null) throw new Error("Viewer is disabled; enable viewer.enabled and restart the daemon");
-      if (!json) await openViewerUrl(viewer.url);
       print({ ok: true, viewer }, json);
     } finally { client.close(); }
     return;

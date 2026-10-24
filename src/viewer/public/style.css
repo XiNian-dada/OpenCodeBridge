@@ -145,6 +145,10 @@ nav { flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
   background: var(--bg-hover);
   box-shadow: inset 2px 0 0 var(--fg);
 }
+.conversation.inactive { color: var(--muted); }
+.conversation.inactive .conversation-meta { color: var(--muted-2); }
+.conversation.inactive[aria-current="true"] { box-shadow: inset 2px 0 0 var(--muted); }
+.conversation.inactive .dot.completed { background: var(--muted-2); }
 .conversation-title {
   display: flex;
   align-items: center;
@@ -820,3 +824,8 @@ summary:focus-visible {
     transition: none !important;
   }
 }
+
+.older-conversations { width: 100%; }
+.older-conversations > summary { padding: 10px; color: var(--muted); font-size: 11px; cursor: pointer; }
+.progressive-output .tool-pre { max-height: none; overflow: visible; }
+.expand-output { display: block; margin: 8px 0 0; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg); color: var(--fg-2); cursor: pointer; font-size: 11px; }

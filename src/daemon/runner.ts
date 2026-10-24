@@ -25,7 +25,6 @@ async function main(): Promise<void> {
   const viewer = config.viewer?.enabled === false ? null : new TaskViewer({
     service: services.service,
     logger,
-    autoOpen: config.viewer?.auto_open ?? (config.adapter === "opencode"),
   });
 
   let shuttingDown = false;

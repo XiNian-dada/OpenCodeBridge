@@ -48,7 +48,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
     "agent_viewer",
     {
       title: "Get the live conversation viewer",
-      description: "Return the private local URL of the automatically updating task, prompt, reply and tool-call viewer. Tasks open it automatically by default. Use open_in_codex with this URL to show it beside the chat when available. No model call or export is needed.",
+      description: "Return the private local URL of the automatically updating task, prompt, reply and tool-call viewer. Use open_in_codex with this URL to show or reuse it in the Codex in-app browser. The daemon never launches the system browser. No model call or export is needed.",
       inputSchema: AgentViewerInput,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },

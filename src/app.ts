@@ -44,10 +44,8 @@ export function createServices(
   store?: SqliteStore,
 ): BridgeServices {
   const redactor = new Redactor({ maxStringChars: config.history.max_payload_chars });
-  const messageRedactor = new Redactor({ maxStringChars: config.history.max_delegation_chars });
   const eventStore = new EventStore({
     redactor,
-    messageRedactor,
     maxPayloadChars: config.history.max_payload_chars,
   });
   const modelPolicy = new ModelPolicy(config.models);

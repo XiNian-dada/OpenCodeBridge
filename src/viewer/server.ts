@@ -1,33 +1,21 @@
-import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { promisify } from "node:util";
 import type { TaskService } from "../core/task-service.js";
 import { isBridgeError } from "../errors.js";
 import type { Logger } from "../logging.js";
 import { taskPayload } from "../mcp/task-payload.js";
 import type { TaskViewerInfo } from "../types.js";
 
-const execFileAsync = promisify(execFile);
 const assets = new Map([
   ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8" }],
   ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
 ]);
 
-export async function openViewerUrl(url: string): Promise<void> {
-  if (process.platform === "darwin") await execFileAsync("/usr/bin/open", [url], { timeout: 5000 });
-  else if (process.platform === "linux") await execFileAsync("xdg-open", [url], { timeout: 5000 });
-  else throw new Error("Automatic viewer opening is supported on macOS and Linux");
-}
-
 export interface ViewerOptions {
   service: TaskService;
   logger: Logger;
-  autoOpen: boolean;
-  opener?: (url: string) => Promise<void>;
-  now?: () => number;
 }
 
 /** Read-only local UI. No filesystem, configuration or mutation endpoints. */
@@ -41,13 +29,7 @@ export class TaskViewer {
   });
   private origin = "";
   private focusedTask: string | null = null;
-  private lastSeen = Number.NEGATIVE_INFINITY;
-  private lastOpened = Number.NEGATIVE_INFINITY;
-  private opening = false;
-  private readonly now: () => number;
-
   constructor(private readonly options: ViewerOptions) {
-    this.now = options.now ?? Date.now;
     this.server.requestTimeout = 10_000;
     this.server.headersTimeout = 10_000;
   }
@@ -68,21 +50,11 @@ export class TaskViewer {
   }
 
   info(): TaskViewerInfo {
-    return { url: this.origin ? `${this.origin}/#key=${this.token}` : null, auto_open: this.options.autoOpen };
+    return { url: this.origin ? `${this.origin}/#key=${this.token}` : null, auto_open: false };
   }
 
   showTask(taskId: string): void {
     this.focusedTask = taskId;
-    const now = this.now();
-    // A polling page is already visible: update its selection, don't create tabs.
-    if (!this.options.autoOpen || this.opening || now - Math.max(this.lastSeen, this.lastOpened) < 10_000) return;
-    const url = this.info().url;
-    if (url === null) return;
-    this.opening = true;
-    this.lastOpened = now;
-    void (this.options.opener ?? openViewerUrl)(url)
-      .catch(() => this.options.logger.warn("Could not open the viewer; use bridge viewer to reopen it"))
-      .finally(() => { this.opening = false; });
   }
 
   async close(): Promise<void> {
@@ -128,7 +100,6 @@ export class TaskViewer {
       this.json(res, 401, { error: "请使用 bridge viewer 打开的私有链接" });
       return;
     }
-    this.lastSeen = this.now();
     if (url.pathname === "/api/tasks") {
       const tasks = await this.options.service.list({ limit: 100 });
       this.json(res, 200, { focused_task_id: this.focusedTask, tasks: tasks.map((task) => ({ ...taskPayload(task, "summary"), created_at: task.created_at })) });

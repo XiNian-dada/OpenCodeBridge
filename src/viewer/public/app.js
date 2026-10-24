@@ -42,6 +42,8 @@ const state = {
   serverFocusRoot: null,
   serverFocusTask: null,
   sidebarKey: "",
+  historyExpanded: false,
+  outputOffsets: new Map(),
   headerKey: "",
   transcriptKey: "",
   firstRender: true,
@@ -482,15 +484,16 @@ function statusChip(status) {
 function renderSidebar() {
   const conversations = state.conversations;
   const signature = `${conversations
-    .map((group) => `${group.root}:${group.latest.task_id}:${group.latest.status}:${group.tasks.length}`)
+    .map((group) => `${group.root}:${group.latest.task_id}:${group.tasks.map((task) => `${task.task_id}:${task.status}`).join(",")}`)
     .join("|")}|${state.selectedRoot}`;
   if (signature === state.sidebarKey) return;
   state.sidebarKey = signature;
 
   $("task-count").textContent = String(conversations.length);
-  const items = conversations.map((group) => {
+  const renderConversation = (group) => {
     const latest = group.latest;
-    const button = node("button", undefined, "conversation");
+    const active = group.tasks.some((task) => !isTerminal(task));
+    const button = node("button", undefined, `conversation ${active ? "active" : "inactive"}`);
     button.type = "button";
     button.title = latest.repo_root ?? "";
     button.setAttribute("aria-current", String(group.root === state.selectedRoot));
@@ -510,7 +513,18 @@ function renderSidebar() {
     button.append(title, meta);
     button.addEventListener("click", () => selectRoot(group.root, true));
     return button;
-  });
+  };
+  const active = conversations.filter((group) => group.tasks.some((task) => !isTerminal(task)));
+  const history = conversations.filter((group) => group.tasks.every(isTerminal));
+  const items = [...active, ...history.slice(0, 5)].map(renderConversation);
+  if (history.length > 5) {
+    const older = node("details", undefined, "older-conversations");
+    older.open = state.historyExpanded;
+    older.append(node("summary", `更早的历史会话 · ${history.length - 5}`));
+    older.append(...history.slice(5).map(renderConversation));
+    older.addEventListener("toggle", () => { state.historyExpanded = older.open; });
+    items.push(older);
+  }
 
   $("tasks").replaceChildren(
     ...(items.length > 0 ? items : [node("p", "还没有委派会话", "sidebar-empty")]),
@@ -800,31 +814,41 @@ function entrySignature(entry) {
   return entryKey(entry);
 }
 
-function previewText(text, max) {
-  if (text.length <= max) return text;
-  const lineBreak = text.lastIndexOf("\n", max);
-  const end = lineBreak > max * 0.55 ? lineBreak : max;
-  return `${text.slice(0, end).trimEnd()}\n\n…`;
+function renderMessageBody(entry, isCodex) {
+  return [isCodex ? node("p", entry.text, "bubble-text") : renderMarkdown(entry.text)];
 }
 
-function renderMessageBody(entry, isCodex, openKeys) {
-  const content = (text) => isCodex
-    ? node("p", text, "bubble-text")
-    : renderMarkdown(text);
-
-  if (entry.text.length <= 800) return [content(entry.text)];
-
-  const nodes = [content(previewText(entry.text, 560))];
-  const details = node("details", undefined, "long-message");
-  const detailsKey = `${entryKey(entry)}:full`;
-  details.dataset.key = detailsKey;
-  details.open = openKeys.has(detailsKey);
-  details.append(
-    node("summary", `展开完整内容 · ${entry.text.length} 字`),
-    content(entry.text),
-  );
-  nodes.push(details);
-  return nodes;
+// Keep all recorded output, revealing another readable segment on each click.
+function progressiveOutput(value, key) {
+  const text = displayValue(value);
+  const wrap = node("div", undefined, "progressive-output");
+  const pre = node("pre", "", "tool-pre");
+  const more = node("button", "", "expand-output");
+  more.type = "button";
+  let offset = 0;
+  function reveal(end) {
+    pre.append(document.createTextNode(text.slice(offset, end)));
+    offset = end;
+    state.outputOffsets.set(key, offset);
+    more.hidden = offset >= text.length;
+    more.textContent = `展开下一段 · 剩余 ${text.length - offset} 字`;
+  }
+  function nextEnd() {
+    let end = Math.min(offset + 6000, text.length);
+    let cursor = offset;
+    for (let lines = 0; lines < 80; lines++) {
+      const newline = text.indexOf("\n", cursor);
+      if (newline === -1 || newline >= end) break;
+      cursor = newline + 1;
+      if (lines === 79) end = cursor;
+    }
+    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+    return end;
+  }
+  reveal(Math.min(state.outputOffsets.get(key) || nextEnd(), text.length));
+  more.addEventListener("click", () => reveal(nextEnd()));
+  wrap.append(pre, more);
+  return wrap;
 }
 
 function renderMessageEntry(entry, openKeys) {
@@ -874,7 +898,7 @@ function renderToolEntry(entry, openKeys) {
 
   const card = node("details", undefined, "tool-card");
   card.dataset.key = entryKey(entry);
-  card.open = group.status === "failed" || openKeys.has(card.dataset.key);
+  card.open = group.kind === "shell" || /^(bash|shell)$/.test(group.tool) || group.status === "failed" || openKeys.has(card.dataset.key);
 
   const summary = node("summary");
   summary.append(
@@ -895,13 +919,13 @@ function renderToolEntry(entry, openKeys) {
     hasContent = true;
   }
   if (group.progress !== null && group.progress !== undefined) {
-    body.append(node("div", "进度", "tool-label"), node("pre", displayValue(group.progress), "tool-pre"));
+    body.append(node("div", "进度", "tool-label"), progressiveOutput(group.progress, `${entryKey(entry)}:progress`));
     hasContent = true;
   }
   if (group.output !== null && group.output !== undefined) {
     body.append(
       node("div", group.status === "failed" ? "错误" : "结果", "tool-label"),
-      node("pre", displayValue(group.output), "tool-pre"),
+      progressiveOutput(group.output, `${entryKey(entry)}:output`),
     );
     hasContent = true;
   }

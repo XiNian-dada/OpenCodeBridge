@@ -662,6 +662,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         throw new BridgeError("TASK_ABORTED", "OpenCode task was aborted during model probe");
       }
       if (mode === "require") {
+        if (isBridgeError(error)) throw error;
         throw new BridgeError(
           "MODEL_GATEWAY_UNAVAILABLE",
           "Bridge model gateway could not be prepared",

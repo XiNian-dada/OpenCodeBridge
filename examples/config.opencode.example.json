@@ -1,7 +1,7 @@
 {
   "adapter": "opencode",
   "log_level": "info",
-  "viewer": { "enabled": true, "auto_open": true },
+  "viewer": { "enabled": true, "auto_open": false },
   "scheduler": {
     "max_concurrent": 2,
     "max_queue": 10,
@@ -9,8 +9,8 @@
     "max_timeout_seconds": 1800
   },
   "models": {
-    "default": "opencode/deepseek-v4.1-flash-free",
-    "allow": ["opencode/deepseek-v4.1-flash-free"],
+    "default": "opencode-go/deepseek-v4.1-flash",
+    "allow": ["opencode-go/*"],
     "expensive": [],
     "allow_expensive": false,
     "max_cost_usd": null,

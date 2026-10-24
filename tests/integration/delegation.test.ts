@@ -7,7 +7,7 @@ describe("delegation discovery and waiting", () => {
   it("reports policy and soft limits without probing or invoking the adapter", async () => {
     const h = await createHarness({ maxTokens: 1000 });
     try {
-      h.config.models.allow.push("mock/premium");
+      h.config.models.allow.push("mock/premium", "opencode-go/*");
       h.config.models.expensive.push("mock/premium");
       h.adapter.probe = async () => { throw new Error("must not probe"); };
       h.adapter.start = async () => { throw new Error("must not run"); };
@@ -16,6 +16,7 @@ describe("delegation discovery and waiting", () => {
       expect(capabilities.models.allowed).toEqual([
         { model: "mock/echo", permitted: true, error_code: null },
         { model: "mock/premium", permitted: false, error_code: "MODEL_UPGRADE_REQUIRED" },
+        { model: "opencode-go/*", permitted: true, error_code: null },
       ]);
       expect(capabilities.models.availability).toBe("validated_at_task_start");
       expect(capabilities.budgets).toMatchObject({ max_tokens: 1000, enforcement: "soft" });

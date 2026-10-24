@@ -19,7 +19,7 @@ function connection(viewer: TaskViewer) {
 describe("local live task viewer", () => {
   it("serves local assets but requires authentication for history and rejects cross-origin or mutation requests", async () => {
     const h = await createHarness();
-    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent"), autoOpen: false });
+    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent") });
     try {
       await viewer.listen();
       const { origin, headers } = connection(viewer);
@@ -52,19 +52,16 @@ describe("local live task viewer", () => {
     } finally { await viewer.close(); await h.cleanup(); }
   });
 
-  it("automatically opens successful spawns and follows new turns without duplicate tabs", async () => {
+  it("returns a viewer URL and follows new turns without launching a system browser", async () => {
     const h = await createHarness({ delayMs: 100 });
-    const opened: string[] = [];
-    let clock = 0;
-    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent"), autoOpen: true,
-      opener: async (url) => { opened.push(url); }, now: () => clock });
+    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent") });
     try {
       await viewer.listen();
       h.services.service.setViewer(viewer);
       const { origin, headers } = connection(viewer);
       const first = await h.services.service.spawn(spawnInput(h.repoRoot));
       expect(first.viewer_url).toBe(viewer.info().url);
-      expect(opened).toEqual([viewer.info().url]);
+      expect(viewer.info().auto_open).toBe(false);
       const list = await getJson<ViewerTaskList>(`${origin}/api/tasks`, headers);
       expect(list.focused_task_id).toBe(first.task.task_id);
       const initial = await getJson<ViewerHistory>(`${origin}/api/tasks/${first.task.task_id}/events`, headers);
@@ -77,19 +74,15 @@ describe("local live task viewer", () => {
       const second = await h.services.service.message(first.task.task_id, "Continue with the same scope");
       expect(second.task.session_id).toBe(h.services.manager.status(first.task.task_id).session_id);
       expect((await getJson<ViewerTaskList>(`${origin}/api/tasks`, headers)).focused_task_id).toBe(second.task.task_id);
-      expect(opened).toHaveLength(1);
-      // Once the page is no longer polling, the next task reopens it.
-      clock = 20_000;
       viewer.showTask(second.task.task_id);
-      expect(opened).toHaveLength(2);
+      expect(viewer.info().auto_open).toBe(false);
       await expect(h.services.service.spawn({ ...spawnInput(h.repoRoot), model: "forbidden/model" })).rejects.toMatchObject({ code: "MODEL_NOT_ALLOWED" });
-      expect(opened).toHaveLength(2);
     } finally { await viewer.close(); await h.cleanup(); }
   });
 
   it("returns every event across pages, including original prompts and redacted tool payloads", async () => {
     const h = await createHarness();
-    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent"), autoOpen: false });
+    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent") });
     try {
       const original = h.adapter.start.bind(h.adapter);
       h.adapter.start = (task, prompt, context) => {
@@ -118,15 +111,4 @@ describe("local live task viewer", () => {
     } finally { await viewer.close(); await h.cleanup(); }
   });
 
-  it("preserves successful tasks when opening the browser fails", async () => {
-    const h = await createHarness();
-    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent"), autoOpen: true,
-      opener: async () => { throw new Error("No browser on this host"); } });
-    try {
-      await viewer.listen();
-      h.services.service.setViewer(viewer);
-      const { task } = await h.services.service.spawn(spawnInput(h.repoRoot));
-      expect((await h.services.manager.waitForTerminal(task.task_id, 5000))?.status).toBe("completed");
-    } finally { await viewer.close(); await h.cleanup(); }
-  });
 });

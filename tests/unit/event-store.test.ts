@@ -73,10 +73,18 @@ describe("EventStore", () => {
     expect(typeof event.payload.preview).toBe("string");
   });
 
-  it("keeps conversation messages up to the message payload limit", () => {
+  it("preserves full Bash output and conversation text while redacting secrets", () => {
+    const store = makeStore();
+    const text = "line of output\n".repeat(10000);
+    for (const [source, type] of [["tool", "tool.completed"], ["opencode", "opencode.message"], ["codex", "task.created"]] as const) {
+      const event = store.append("task_full", null, source, type, { text, api_key: "private" });
+      expect(event.payload).toEqual({ text, api_key: "[REDACTED]" });
+    }
+  });
+
+  it("keeps conversation messages independently of compact audit limits", () => {
     const store = new EventStore({
       redactor: new Redactor({ maxStringChars: 40 }),
-      messageRedactor: new Redactor({ maxStringChars: 1000 }),
       maxPayloadChars: 50,
     });
     const text = "y".repeat(300);

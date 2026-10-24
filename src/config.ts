@@ -250,7 +250,8 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
     data_dir: dataDir,
     viewer: {
       enabled: raw.viewer?.enabled ?? true,
-      auto_open: raw.viewer?.auto_open ?? (raw.adapter === "opencode"),
+      // Legacy auto_open is accepted but never launches the system browser.
+      auto_open: false,
     },
     scheduler: {
       max_concurrent: raw.scheduler?.max_concurrent ?? 2,
@@ -259,8 +260,8 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
       max_timeout_seconds: raw.scheduler?.max_timeout_seconds ?? 1800,
     },
     models: {
-      default: raw.models?.default ?? null,
-      allow: raw.models?.allow ?? [],
+      default: raw.models?.default ?? (raw.adapter === "opencode" ? "opencode-go/deepseek-v4.1-flash" : null),
+      allow: raw.models?.allow ?? (raw.adapter === "opencode" ? ["opencode-go/*"] : []),
       expensive: raw.models?.expensive ?? [],
       allow_expensive: raw.models?.allow_expensive ?? false,
       max_cost_usd: raw.models?.max_cost_usd ?? null,
