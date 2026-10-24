@@ -74,6 +74,11 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - macOS for writable OpenCode tasks (`sandbox-exec`) and read-only OS read
   isolation; Linux read-only tasks fall back to OpenCode permissions unless an
   OS sandbox is added
+- IPC clients reconnect before new requests after a daemon restart; in-flight requests
+  fail without replaying mutations.
+- Context-based follow-ups keep the same execution directory. Only newly authorized
+  files are added; existing snapshots are never overwritten. Each turn retains its
+  own hashed manifest. Start with context_files on the initial task to use this mode.
 - The daemon starts automatically when the MCP server connects
 
 Node 23 is EOL and is not supported. This machine has a keg-only Homebrew Node 24:

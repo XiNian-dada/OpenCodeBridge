@@ -1,4 +1,4 @@
-import { realpath, rm } from "node:fs/promises";
+import { realpath, rm, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createServices } from "../../src/app.js";
@@ -184,6 +184,29 @@ describe("OpenCodeAdapter", () => {
     } finally {
       await harness.cleanup();
     }
+  });
+
+  it("keeps a stable authorized directory when a follow-up adds context", async () => {
+    const h = await makeOpenCodeHarness("success");
+    try {
+      await writeFile(join(h.tempDir, "first.txt"), "first");
+      await writeFile(join(h.tempDir, "next.txt"), "next");
+      const first = await h.services.manager.spawn({ ...input(h.tempDir), context_files: ["first.txt"] });
+      const initial = await h.services.manager.waitForTerminal(first.task.task_id, 5000);
+      await writeFile(join(h.tempDir, "first.txt"), "changed in main repo");
+      const follow = await h.services.manager.message(first.task.task_id, "Read next.txt", ["next.txt"]);
+      const done = await h.services.manager.waitForTerminal(follow.task.task_id, 5000);
+      expect(done?.status).toBe("completed");
+      expect(done?.session_id).toBe(initial?.session_id);
+      expect(done?.context_path).toBe(initial?.context_path);
+      expect(await readFile(join(done!.context_path!, "next.txt"), "utf8")).toBe("next");
+      expect(await readFile(join(done!.context_path!, "first.txt"), "utf8")).toBe("first");
+      const original = await h.services.service.delivery({ task_id: initial!.task_id });
+      const next = await h.services.service.delivery({ task_id: done!.task_id });
+      expect(original.context.files).toHaveLength(1);
+      expect(next.context.files).toHaveLength(2);
+      expect(original.context.manifest_path).not.toBe(next.context.manifest_path);
+    } finally { await h.cleanup(); }
   });
 
   it("aborts a running OpenCode session", async () => {

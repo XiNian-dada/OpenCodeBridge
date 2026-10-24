@@ -409,7 +409,7 @@ export class TaskManager {
       patch === "" ? null : createHash("sha256").update(patch).digest("hex");
 
     const commands = extractDeliveryCommands(events, simulated);
-    const context = await readContextManifest(task);
+    const context = await readContextManifest(task, resolveDataDir(this.options.config));
     const findings = parseReviewFindings(finalAssistantText(events));
     const verificationStatus = simulated
       ? "simulated"
@@ -774,6 +774,9 @@ export class TaskManager {
 
     const resolvedModel = this.options.modelPolicy.resolve(parent.model);
     const repo = await this.options.pathPolicy.resolveRepoRoot(parent.repo_root, parent.read_only);
+    if (additions.length > 0 && parent.context_path === null) {
+      throw new BridgeError("INVALID_ARGUMENT", "Start a new task with context_files to enable snapshot isolation");
+    }
     const combinedContext = [...new Set([...parent.context_files, ...additions])];
     if (additions.length > 0) {
       await inspectContextFiles(repo.repo_root, combinedContext);
@@ -804,7 +807,7 @@ export class TaskManager {
       worktree_path: parent.worktree_path,
       worktree_git_dir: parent.worktree_git_dir,
       base_commit: parent.base_commit,
-      context_path: additions.length > 0 ? null : parent.context_path,
+      context_path: parent.context_path,
       context_files: combinedContext,
       created_at: createdAt,
       started_at: null,
@@ -1320,6 +1323,27 @@ export class TaskManager {
               details: { task_id: task.id, context_path: task.context_path },
             },
           );
+        }
+        // Keep the session's execution directory stable. Add only missing authorized
+        // files; do not overwrite the earlier turn's snapshot if repository files changed.
+        const ownDir = join(resolveDataDir(this.options.config), "tasks", task.id);
+        const ownManifest = join(ownDir, "context-manifest.json");
+        let hasManifest = true;
+        try { await stat(ownManifest); } catch { hasManifest = false; }
+        if (!hasManifest) {
+          const missing: string[] = [];
+          for (const file of task.context_files) {
+            try { await stat(join(task.context_path, file)); }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              missing.push(file);
+            }
+          }
+          if (missing.length) await writeContextSnapshot({ repoRoot: task.repo_root, files: missing, destination: task.context_path, exclusive: true });
+          const files = await inspectContextFiles(task.context_path, task.context_files);
+          await mkdir(ownDir, { recursive: true, mode: 0o700 });
+          await writeFile(ownManifest, JSON.stringify({ created_at: this.now().toISOString(), repo_root: task.repo_root, workspace: task.context_path, files, total_bytes: files.reduce((sum, file) => sum + file.bytes, 0) }, null, 2), { flag: "wx", mode: 0o600 });
+          this.append(task, "bridge", "context.snapshot.extended", { workspace: task.context_path, manifest_path: ownManifest, files });
         }
         return;
       }
@@ -1973,6 +1997,7 @@ function finalAssistantText(events: BridgeEvent[]): string | null {
 
 async function readContextManifest(
   task: TaskRecord,
+  dataDir: string,
 ): Promise<DeliveryPackage["context"]> {
   if (task.context_path === null) {
     return {
@@ -1983,7 +2008,8 @@ async function readContextManifest(
       verified: false,
     };
   }
-  const manifestPath = join(dirname(task.context_path), "context-manifest.json");
+  let manifestPath = join(dataDir, "tasks", task.id, "context-manifest.json");
+  try { await stat(manifestPath); } catch { manifestPath = join(dirname(task.context_path), "context-manifest.json"); }
   try {
     const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as {
       files?: unknown;

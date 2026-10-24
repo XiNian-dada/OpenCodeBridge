@@ -100,6 +100,7 @@ export async function writeContextSnapshot(options: {
   repoRoot: string;
   files: readonly string[];
   destination: string;
+  exclusive?: boolean;
 }): Promise<{ files: ContextFile[]; total_bytes: number }> {
   const normalized = normalizeContextPaths(options.files);
   const root = await safeRealpath(options.repoRoot, "repository root");
@@ -142,7 +143,9 @@ export async function writeContextSnapshot(options: {
       throw new BridgeError("INVALID_ARGUMENT", `unsafe context destination: ${relative}`);
     }
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    await writeFile(target, data, { mode: 0o600 });
+    const parent = await safeRealpath(dirname(target), "context destination parent");
+    if (!isWithin(destination, parent)) throw new BridgeError("INVALID_ARGUMENT", "Context destination escapes workspace");
+    await writeFile(target, data, { mode: 0o600, ...(options.exclusive ? { flag: "wx" } : {}) });
     files.push({
       path: relative,
       sha256: createHash("sha256").update(data).digest("hex"),
