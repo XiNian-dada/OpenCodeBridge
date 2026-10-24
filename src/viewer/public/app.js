@@ -1,4 +1,4 @@
-"use strict";
+import { renderMarkdown } from "./markdown.js";
 
 const key = new URLSearchParams(location.hash.slice(1)).get("key");
 const $ = (id) => document.getElementById(id);
@@ -163,120 +163,6 @@ function payloadText(payload, field) {
     return extractJsonStringField(payload.preview, field);
   }
   return "";
-}
-
-function appendInline(parent, text) {
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-  let last = 0;
-  for (const match of text.matchAll(pattern)) {
-    if (match.index > last) {
-      parent.append(document.createTextNode(text.slice(last, match.index)));
-    }
-    const token = match[0];
-    if (token.startsWith("**")) {
-      parent.append(node("strong", token.slice(2, -2)));
-    } else {
-      parent.append(node("code", token.slice(1, -1)));
-    }
-    last = match.index + token.length;
-  }
-  if (last < text.length) parent.append(document.createTextNode(text.slice(last)));
-}
-
-function renderMarkdown(text) {
-  const container = node("div", undefined, "bubble-text markdown");
-  const lines = String(text).split("\n");
-  let paragraph = [];
-  let list = null;
-  let code = null;
-
-  const flushParagraph = () => {
-    if (paragraph.length === 0) return;
-    const element = node("p");
-    paragraph.forEach((line, index) => {
-      if (index > 0) element.append(node("br"));
-      appendInline(element, line);
-    });
-    container.append(element);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (list !== null) {
-      container.append(list.element);
-      list = null;
-    }
-  };
-  const flushCode = () => {
-    if (code === null) return;
-    const pre = node("pre");
-    pre.append(node("code", code.join("\n")));
-    container.append(pre);
-    code = null;
-  };
-
-  for (const line of lines) {
-    if (/^```/.test(line)) {
-      if (code === null) {
-        flushParagraph();
-        flushList();
-        code = [];
-      } else {
-        flushCode();
-      }
-      continue;
-    }
-    if (code !== null) {
-      code.push(line);
-      continue;
-    }
-    if (/^\s*$/.test(line)) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
-    if (heading !== null) {
-      flushParagraph();
-      flushList();
-      const level = Math.min(5, (heading[1]?.length ?? 1) + 2);
-      container.append(node(`h${level}`, heading[2], "md-heading"));
-      continue;
-    }
-
-    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
-    if (bullet !== null) {
-      flushParagraph();
-      if (list === null || list.type !== "ul") {
-        flushList();
-        list = { type: "ul", element: node("ul") };
-      }
-      const item = node("li");
-      appendInline(item, bullet[1] ?? "");
-      list.element.append(item);
-      continue;
-    }
-
-    const ordered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
-    if (ordered !== null) {
-      flushParagraph();
-      if (list === null || list.type !== "ol") {
-        flushList();
-        list = { type: "ol", element: node("ol") };
-      }
-      const item = node("li");
-      appendInline(item, ordered[1] ?? "");
-      list.element.append(item);
-      continue;
-    }
-
-    paragraph.push(line);
-  }
-
-  flushParagraph();
-  flushList();
-  flushCode();
-  return container;
 }
 
 function eventText(event) {
@@ -814,8 +700,8 @@ function entrySignature(entry) {
   return entryKey(entry);
 }
 
-function renderMessageBody(entry, isCodex) {
-  return [isCodex ? node("p", entry.text, "bubble-text") : renderMarkdown(entry.text)];
+function renderMessageBody(entry) {
+  return [renderMarkdown(entry.text)];
 }
 
 // Keep all recorded output, revealing another readable segment on each click.

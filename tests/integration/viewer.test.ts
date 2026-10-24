@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { request } from "node:http";
+import { Script } from "node:vm";
 import { TaskViewer } from "../../src/viewer/server.js";
 import { createLogger } from "../../src/logging.js";
 import { createHarness, spawnInput } from "../helpers/fixtures.js";
@@ -30,7 +31,12 @@ describe("local live task viewer", () => {
       expect(shellHtml).toContain("Codex");
       expect(shellHtml).toContain("OpenCode");
       expect(shellHtml).toContain("全部审计事件");
-      expect((await fetch(`${origin}/app.js`)).headers.get("content-type")).toContain("javascript");
+      const script = await fetch(`${origin}/app.js`);
+      expect(script.headers.get("content-type")).toContain("javascript");
+      // Both development and packaged viewers serve a standalone classic script.
+      const javascript = await script.text();
+      expect(() => new Script(javascript)).not.toThrow();
+      expect(javascript).toContain("md-table-wrap");
       expect((await fetch(`${origin}/api/tasks`)).status).toBe(401);
       expect((await fetch(`${origin}/api/tasks`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
       expect((await fetch(`${origin}/api/tasks`, { headers: { ...headers, origin: "https://attacker.invalid" } })).status).toBe(403);

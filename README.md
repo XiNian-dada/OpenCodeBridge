@@ -300,6 +300,11 @@ click. Output expansion survives polling. New conversation and tool events retai
 their full redacted text; ordinary audit metadata still has size limits. Previously
 truncated records and output truncated upstream cannot be recovered. Expand the
 actual prompt or enable **全部审计事件** to inspect system events.
+Both sides render CommonMark/GFM headings, tables, nested and task lists,
+quotes, links, emphasis, and fenced code. Wide tables scroll horizontally;
+code blocks retain all content and offer a language label and copy button.
+Raw HTML stays literal text, and images appear as links without automatic loading.
+The Markdown parser is bundled locally, with no CDN or browser network dependency.
 
 An already-polling viewer follows new tasks without opening duplicate tabs.
 Selecting an older task pauses automatic following; re-enable **自动跟随**

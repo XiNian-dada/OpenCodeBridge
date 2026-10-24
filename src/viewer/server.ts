@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { ViewerSettings } from "./settings.js";
 import type { TaskService } from "../core/task-service.js";
@@ -13,6 +14,18 @@ const assets = new Map([
   ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8" }],
   ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
 ]);
+
+async function readAsset(file: string): Promise<Uint8Array> {
+  const url = new URL(`./public/${file}`, import.meta.url);
+  // tsx development serves source assets; bundle browser imports there too.
+  // Packaged JS always reads the prebuilt asset and needs no build tooling.
+  if (file === "app.js" && import.meta.url.endsWith(".ts")) {
+    const { build } = await import("esbuild");
+    const result = await build({ entryPoints: [fileURLToPath(url)], bundle: true, write: false, format: "iife", platform: "browser", target: "es2022" });
+    return result.outputFiles[0]!.contents;
+  }
+  return readFile(url);
+}
 
 export interface ViewerOptions {
   service: TaskService;
@@ -38,7 +51,7 @@ export class TaskViewer {
 
   async listen(): Promise<void> {
     // Fail startup if packaged assets are missing rather than serving a blank page.
-    await Promise.all([...assets.values()].map((asset) => readFile(new URL(`./public/${asset.file}`, import.meta.url))));
+    await Promise.all([...assets.values()].map((asset) => readAsset(asset.file)));
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
       this.server.listen(0, "127.0.0.1", () => {
@@ -91,7 +104,7 @@ export class TaskViewer {
     }
     const asset = assets.get(url.pathname);
     if (asset !== undefined) {
-      const body = await readFile(new URL(`./public/${asset.file}`, import.meta.url));
+      const body = await readAsset(asset.file);
       res.writeHead(200, { "content-type": asset.type });
       res.end(body);
       return;
