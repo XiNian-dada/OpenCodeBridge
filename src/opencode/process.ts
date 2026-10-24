@@ -26,6 +26,8 @@ export interface ManagedOpenCodeServerOptions {
   startupTimeoutMs: number;
   logger: Logger;
   extraEnv?: Record<string, string>;
+  /** Trusted catalog discovery only; never use for a sandboxed task. */
+  useUserDatabaseForDiscovery?: boolean;
   signal?: AbortSignal;
   sandbox?: {
     mode?: SandboxMode;
@@ -63,6 +65,9 @@ export function versionMatches(version: string, pattern: string): boolean {
 export async function startManagedOpenCodeServer(
   options: ManagedOpenCodeServerOptions,
 ): Promise<ManagedOpenCodeServer> {
+  if (options.useUserDatabaseForDiscovery && options.sandbox !== undefined) {
+    throw new BridgeError("INVALID_CONFIG", "Task workers cannot use the user database");
+  }
   const port = await findFreePort();
   const password = randomBytes(32).toString("base64url");
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -100,7 +105,7 @@ export async function startManagedOpenCodeServer(
     ...sanitizeEnvironment(process.env),
     ...options.extraEnv,
     OPENCODE_SERVER_PASSWORD: password,
-    OPENCODE_DB: join(taskDir, "opencode.db"),
+    OPENCODE_DB: options.useUserDatabaseForDiscovery ? process.env.OPENCODE_DB : join(taskDir, "opencode.db"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(options.configContent),
     OPENCODE_CONFIG_PROJECT_DISABLE: "1",
     OPENCODE_DISABLE_CLAUDE_CODE: "1",

@@ -15,6 +15,8 @@ const ALLOWED_PATHS = new Set([
 const STRIPPED_HEADERS = new Set([
   "host",
   "authorization",
+  "x-org-id",
+  "x-opencode-org-id",
   "x-api-key",
   "api-key",
   "proxy-authorization",
@@ -26,6 +28,8 @@ const STRIPPED_HEADERS = new Set([
 export interface ModelGatewayOptions {
   upstreamBaseUrl: string;
   apiKey: string | null;
+  /** Trusted parent-supplied headers; never copied into worker configuration. */
+  headers?: Record<string, string>;
   logger: Logger;
 }
 
@@ -121,6 +125,9 @@ export async function startModelGateway(options: ModelGatewayOptions): Promise<M
       if (value === undefined) continue;
       if (STRIPPED_HEADERS.has(key.toLowerCase())) continue;
       headers[key] = value;
+    }
+    for (const [key, value] of Object.entries(options.headers ?? {})) {
+      if (key.toLowerCase() === "x-opencode-org-id") headers[key.toLowerCase()] = value;
     }
     if (options.apiKey !== null && options.apiKey !== "") {
       headers.authorization = `Bearer ${options.apiKey}`;

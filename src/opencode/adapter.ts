@@ -32,6 +32,7 @@ import {
   modelCostKnown,
   resolveOpenCodeModel,
 } from "./model-resolver.js";
+import { consoleCredential } from "./console-credential.js";
 import { startModelGateway, type ModelGateway } from "./model-gateway.js";
 import {
   startManagedOpenCodeServer,
@@ -555,7 +556,11 @@ export class OpenCodeAdapter implements AgentAdapter {
         cwd: workspace,
         dataDir,
         taskId: probeId,
+        useUserDatabaseForDiscovery: true,
         configContent: {
+          ...(task.provider_id === "opencode-go" && this.options.config.opencode.go_api_key ? {
+            provider: { "opencode-go": { options: { apiKey: "bridge-discovery-placeholder" } } },
+          } : {}),
           permissions: [{ action: "*", resource: "*", effect: "deny" }],
           mcp: {},
           plugin: [],
@@ -601,9 +606,31 @@ export class OpenCodeAdapter implements AgentAdapter {
         return direct;
       }
 
+      let apiKey = settings.apiKey;
+      const headers: Record<string, string> = {};
+      if (task.provider_id === "opencode-go") {
+        const upstream = new URL(settings.baseURL);
+        if (upstream.origin !== "https://opencode.ai" || !upstream.pathname.startsWith("/inference/go/")) {
+          throw new BridgeError("MODEL_GATEWAY_UNAVAILABLE", "Unsupported Go credential destination");
+        }
+        const org = (model.headers as Record<string, unknown> | undefined)?.["x-opencode-org-id"];
+        if (typeof org === "string") headers["x-opencode-org-id"] = org;
+        apiKey = this.options.config.opencode.go_api_key || apiKey;
+        if (!apiKey) {
+          const credential = await consoleCredential(this.options.config.opencode.binary);
+          if (!credential || (credential.expires !== null && credential.expires <= Date.now())) {
+            throw new BridgeError("PROVIDER_AUTH_FAILED", "OpenCode Console login is unavailable or expired; reconnect in OpenCode or set a Go API key in Bridge settings");
+          }
+          if (org && credential.orgID && org !== credential.orgID) {
+            throw new BridgeError("PROVIDER_AUTH_FAILED", "OpenCode Console workspace does not match the selected Go model");
+          }
+          apiKey = credential.token;
+        }
+      }
       const gateway = await startModelGateway({
         upstreamBaseUrl: settings.baseURL,
-        apiKey: settings.apiKey,
+        apiKey,
+        headers,
         logger: this.options.logger,
       });
       try {

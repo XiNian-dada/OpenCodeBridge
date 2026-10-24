@@ -12,6 +12,11 @@ const args = process.argv.slice(2);
 const port = Number(args[args.indexOf("--port") + 1]);
 const version = process.env.FAKE_VERSION ?? "2.1.2";
 const server = createServer((req, res) => {
+  if (req.url === "/api/model") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [{ providerID: process.env.OPENCODE_DB ? "isolated" : "opencode-go", id: "echo", modelID: "echo" }] }));
+    return;
+  }
   if (req.url === "/api/info") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ version, pid: process.pid, urls: ["http://127.0.0.1:" + port], paths: { tmp: "/tmp" } }));
@@ -65,6 +70,19 @@ describe("managed OpenCode process", () => {
     }
   });
 
+
+  it("uses the user database only for trusted discovery and forbids it for workers", async () => {
+    const { dir, binary } = await makeFakeBinary();
+    const options = { binary, cwd: dir, dataDir: join(dir, "data"), taskId: "discovery", configContent: {}, compatibility: "2.1.x", startupTimeoutMs: 5000, logger: createLogger("silent") };
+    let discovery, worker;
+    try {
+      discovery = await startManagedOpenCodeServer({ ...options, useUserDatabaseForDiscovery: true });
+      expect((await discovery.client.models())[0]?.providerID).toBe("opencode-go");
+      worker = await startManagedOpenCodeServer({ ...options, taskId: "worker" });
+      expect((await worker.client.models())[0]?.providerID).toBe("isolated");
+      await expect(startManagedOpenCodeServer({ ...options, useUserDatabaseForDiscovery: true, sandbox: { worktreePath: dir } })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+    } finally { await discovery?.stop(); await worker?.stop(); await rm(dir, { recursive: true, force: true }); }
+  });
 
   it.skipIf(!sandboxAvailable())("starts under the macOS write-confinement sandbox", async () => {
     const { dir, binary } = await makeFakeBinary();

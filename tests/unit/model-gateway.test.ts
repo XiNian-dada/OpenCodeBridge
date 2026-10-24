@@ -5,13 +5,14 @@ import { startModelGateway } from "../../src/opencode/model-gateway.js";
 
 describe("local model gateway", () => {
   it("forwards /v1 requests, replaces the upstream authorization, and streams the response", async () => {
-    let received: { path?: string; auth?: string; apiKey?: string; body?: string } = {};
+    let received: { path?: string; auth?: string; apiKey?: string; org?: string; body?: string } = {};
     const upstream = createServer(async (req, res) => {
       let body = "";
       for await (const chunk of req) body += chunk;
       received = {
         path: req.url,
         auth: req.headers.authorization,
+        org: req.headers["x-opencode-org-id"] as string | undefined,
         apiKey: req.headers["x-api-key"] as string | undefined,
         body,
       };
@@ -26,6 +27,7 @@ describe("local model gateway", () => {
     const gateway = await startModelGateway({
       upstreamBaseUrl: `http://127.0.0.1:${address.port}/v1`,
       apiKey: "real-secret",
+      headers: { "x-opencode-org-id": "trusted-workspace" },
       logger: createLogger("silent"),
     });
     try {
@@ -34,6 +36,7 @@ describe("local model gateway", () => {
         headers: {
           authorization: "Bearer bridge-local",
           "x-api-key": "dummy-upstream-key",
+          "x-opencode-org-id": "worker-forged-workspace",
           "content-type": "application/json",
         },
         body: JSON.stringify({ model: "test", stream: true }),
@@ -43,6 +46,7 @@ describe("local model gateway", () => {
       expect(received.path).toBe("/v1/chat/completions");
       expect(received.auth).toBe("Bearer real-secret");
       expect(received.apiKey).toBeUndefined();
+      expect(received.org).toBe("trusted-workspace");
       expect(received.body).toContain('"model":"test"');
     } finally {
       await gateway.stop();

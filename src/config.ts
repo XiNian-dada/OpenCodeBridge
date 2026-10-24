@@ -58,6 +58,7 @@ const RawConfigSchema = z
     opencode: z
       .object({
         binary: z.string().min(1).optional(),
+        go_api_key: z.string().max(4096).optional(),
         compatibility: z.string().min(1).optional(),
         startup_timeout_ms: z.number().int().min(1000).max(120_000).optional(),
       })
@@ -114,6 +115,7 @@ export interface BridgeConfig {
   };
   opencode: {
     binary: string;
+    go_api_key?: string;
     compatibility: string;
     startup_timeout_ms: number;
   };
@@ -280,6 +282,7 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
     },
     opencode: {
       binary: raw.opencode?.binary ?? "opencode",
+      ...(raw.opencode?.go_api_key ? { go_api_key: raw.opencode.go_api_key } : {}),
       compatibility: raw.opencode?.compatibility ?? "2.1.x",
       startup_timeout_ms: raw.opencode?.startup_timeout_ms ?? 15_000,
     },
