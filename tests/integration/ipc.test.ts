@@ -7,6 +7,28 @@ import { createLogger } from "../../src/logging.js";
 import { createHarness, spawnInput } from "../helpers/fixtures.js";
 
 describe("daemon IPC", () => {
+  it("reconnects concurrent new requests after a daemon restart but respects explicit close", async () => {
+    const h = await createHarness();
+    const socketPath = join(h.tempDir, "restart.sock");
+    const options = { socketPath, service: h.services.service, logger: createLogger("silent") };
+    let server = new IpcServer(options);
+    let client: IpcTaskClient | null = null;
+    try {
+      await server.listen();
+      client = await IpcTaskClient.connect(socketPath);
+      await client.capabilities();
+      await server.close();
+      await new Promise(r=>setTimeout(r,20));
+      server = new IpcServer(options);
+      await server.listen();
+      const [caps, viewer] = await Promise.all([client.capabilities(), client.viewer()]);
+      expect(caps.models.default).toBe("mock/echo");
+      expect(viewer.url).toBeNull();
+      client.close();
+      await expect(client.capabilities()).rejects.toMatchObject({code:"DAEMON_UNAVAILABLE"});
+    } finally {client?.close(); await server.close(); await h.cleanup();}
+  });
+
   it("serves task operations over a private Unix socket", async () => {
     const harness = await createHarness();
     const socketPath = join(harness.tempDir, "bridge.sock");

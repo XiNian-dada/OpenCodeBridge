@@ -37,38 +37,36 @@ export class IpcTaskClient implements TaskService {
   private closed = false;
 
   private constructor(
-    private readonly socket: Socket,
+    private socket: Socket,
     readonly socketPath: string,
   ) {
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => this.onData(chunk));
-    socket.on("close", () => this.failPending("Bridge daemon connection closed"));
-    socket.on("error", (error) => this.failPending(`Bridge daemon connection error: ${error.message}`));
+    this.bindSocket(socket);
   }
 
-  static connect(socketPath: string, timeoutMs = 5000): Promise<IpcTaskClient> {
-    return new Promise((resolve, reject) => {
-      const socket = connect(socketPath);
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(
-          new BridgeError("DAEMON_UNAVAILABLE", `Timed out connecting to bridge daemon at ${socketPath}`),
-        );
-      }, timeoutMs);
+  private reconnecting: Promise<void> | null = null;
 
-      socket.once("connect", () => {
-        clearTimeout(timer);
-        resolve(new IpcTaskClient(socket, socketPath));
-      });
-      socket.once("error", (error) => {
-        clearTimeout(timer);
-        reject(
-          new BridgeError("DAEMON_UNAVAILABLE", `Cannot connect to bridge daemon at ${socketPath}`, {
-            cause: error,
-          }),
-        );
-      });
-    });
+  private bindSocket(socket: Socket): void {
+    this.socket = socket;
+    this.buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => { if (this.socket === socket) this.onData(chunk); });
+    socket.on("close", () => { if (this.socket === socket) this.failPending("Bridge daemon connection closed"); });
+    socket.on("error", () => { if (this.socket === socket) this.failPending("Bridge daemon connection error"); });
+  }
+
+  static async connect(socketPath: string, timeoutMs = 5000): Promise<IpcTaskClient> {
+    return new IpcTaskClient(await openSocket(socketPath, timeoutMs), socketPath);
+  }
+
+  private async reconnect(): Promise<void> {
+    if (this.reconnecting === null) {
+      this.reconnecting = (async () => {
+        const socket = await openSocket(this.socketPath, 5000);
+        if (this.closed) { socket.destroy(); throw new BridgeError("DAEMON_UNAVAILABLE", "Bridge client closed"); }
+        this.bindSocket(socket);
+      })().finally(() => { this.reconnecting = null; });
+    }
+    await this.reconnecting;
   }
 
   viewer(): Promise<TaskViewerInfo> {
@@ -166,10 +164,13 @@ export class IpcTaskClient implements TaskService {
     this.failPending("Bridge daemon client closed");
   }
 
-  private request<T>(method: string, params: unknown, timeoutMs = 60_000): Promise<T> {
+  private async request<T>(method: string, params: unknown, timeoutMs = 60_000): Promise<T> {
     if (this.closed) {
       return Promise.reject(new BridgeError("DAEMON_UNAVAILABLE", "Bridge daemon client is closed"));
     }
+    // Reconnect only before sending. Never replay an in-flight mutation.
+    if (this.socket.destroyed || !this.socket.writable || this.socket.writableEnded) await this.reconnect();
+    if (this.closed) throw new BridgeError("DAEMON_UNAVAILABLE", "Bridge client closed");
     const id = randomUUID();
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -181,7 +182,11 @@ export class IpcTaskClient implements TaskService {
         reject,
         timer,
       });
-      this.socket.write(`${JSON.stringify({ id, method, params })}\n`);
+      this.socket.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
+        if (!error) return;
+        const pending = this.pending.get(id);
+        if (pending) { this.pending.delete(id); clearTimeout(pending.timer); pending.reject(new BridgeError("DAEMON_UNAVAILABLE", "Bridge request could not be sent")); }
+      });
     });
   }
 
@@ -222,6 +227,21 @@ export class IpcTaskClient implements TaskService {
       pending.reject(new BridgeError("DAEMON_UNAVAILABLE", message));
     }
   }
+}
+
+function openSocket(socketPath: string, timeoutMs: number): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new BridgeError("DAEMON_UNAVAILABLE", "Timed out connecting to bridge daemon"));
+    }, timeoutMs);
+    socket.once("connect", () => { clearTimeout(timer); resolve(socket); });
+    socket.once("error", () => {
+      clearTimeout(timer); socket.destroy();
+      reject(new BridgeError("DAEMON_UNAVAILABLE", "Cannot connect to bridge daemon"));
+    });
+  });
 }
 
 function fromErrorPayload(error: ErrorPayload): BridgeError {
