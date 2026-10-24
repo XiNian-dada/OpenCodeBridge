@@ -829,3 +829,11 @@ summary:focus-visible {
 .older-conversations > summary { padding: 10px; color: var(--muted); font-size: 11px; cursor: pointer; }
 .progressive-output .tool-pre { max-height: none; overflow: visible; }
 .expand-output { display: block; margin: 8px 0 0; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg); color: var(--fg-2); cursor: pointer; font-size: 11px; }
+
+#settings-dialog { max-width: min(520px, 92vw); padding: 24px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); color: var(--fg); }
+#settings-dialog::backdrop { background: #0008; }
+#settings-dialog p { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+#settings-form { display: grid; gap: 12px; }
+#settings-form label { display: grid; gap: 6px; font-size: 12px; }
+#settings-form input:not([type="checkbox"]) { width: 100%; padding: 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg); color: var(--fg); }
+#settings-form label.toggle { display: flex; }

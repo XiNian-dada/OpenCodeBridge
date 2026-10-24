@@ -308,9 +308,26 @@ bridge viewer          # print the private URL; never launch a system browser
 bridge viewer --json   # get its private local URL without opening a browser
 ```
 
+The **配置** button opens local settings: view the credential source, change the
+default model within the existing allowlist, or optionally set/remove an independent
+Go API key. Saves apply to new tasks without restarting. Existing keys are never
+returned to the page. Config writes require the private capability plus same-origin
+JSON requests and use atomic replacement with mode 0600. Keep the private viewer
+URL secret: it also authorizes these narrowly scoped settings changes.
+
+Go normally reuses the active official OpenCode Console credential. A trusted
+read-only catalog probe uses the user database so subscription models are visible;
+only the parent reads the active credential and supplies authentication/workspace
+headers to the official Go endpoint. Task workers keep isolated databases and
+receive only a local gateway URL and dummy key. The parent never refreshes tokens
+itself; reconnect in OpenCode when the login expires. OpenCode database schema
+changes fail closed. `opencode.go_api_key` is an optional independent override.
+The credential lookup follows the upstream [credential schema](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/credential/sql.ts)
+and [Console authentication implementation](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/plugin/provider/opencode.ts).
+
 The daemon owns the viewer, so it continues updating after an MCP adapter
-disconnect. It binds only to `127.0.0.1` on an ephemeral port and serves no write
-or command endpoints. API requests require a random read-only capability from
+disconnect. It binds only to `127.0.0.1` on an ephemeral port and serves no command endpoints. Only the validated settings route can write
+the Bridge config; transcript endpoints are read-only. API requests require a random read-only capability from
 the URL fragment, checked in an Authorization header. Host/Origin checks, a
 same-origin CSP and plain-text rendering protect the log display. Keep its URL
 private. Daemon restart rotates the port/key; retrieve the new URL with `bridge viewer`.

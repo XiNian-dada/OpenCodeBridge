@@ -8,6 +8,7 @@ import { createLogger } from "../logging.js";
 import { openSqliteStore } from "../storage/sqlite-store.js";
 import { IpcServer } from "./server.js";
 import { daemonPaths, removeDaemonState, writeDaemonState } from "./state.js";
+import { ViewerSettings } from "../viewer/settings.js";
 import { TaskViewer } from "../viewer/server.js";
 
 export const DAEMON_VERSION = "0.1.0";
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   const viewer = config.viewer?.enabled === false ? null : new TaskViewer({
     service: services.service,
     logger,
+    settings: new ViewerSettings(config, configPath),
   });
 
   let shuttingDown = false;

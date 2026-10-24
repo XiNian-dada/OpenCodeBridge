@@ -1206,4 +1206,33 @@ $("jump").addEventListener("click", () => {
   $("jump").hidden = true;
 });
 
+$("settings-open").addEventListener("click", async () => {
+  $("settings-dialog").showModal();
+  $("settings-key").value = "";
+  $("settings-clear-key").checked = false;
+  $("settings-result").textContent = "";
+  try {
+    const data = await api("/api/settings");
+    $("settings-model").value = data.default_model || "";
+    $("settings-allow").textContent = `允许模型：${data.allowed_models.join("、")}`;
+    $("settings-source").textContent = `${data.credential_source} · ${data.go_key_configured ? "已配置，调用时验证" : data.credential_valid ? "已连接" : "需在 OpenCode 中连接"}`;
+  } catch (error) { $("settings-result").textContent = error.message; }
+});
+$("settings-close").addEventListener("click", () => { $("settings-key").value = ""; $("settings-dialog").close(); });
+$("settings-dialog").addEventListener("close", () => { $("settings-key").value = ""; });
+$("settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("settings-save").disabled = true;
+  try {
+    const input = { default_model: $("settings-model").value.trim(), clear_go_api_key: $("settings-clear-key").checked };
+    if ($("settings-key").value.trim()) input.go_api_key = $("settings-key").value.trim();
+    const response = await fetch("/api/settings", { method: "PUT", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(input), signal: AbortSignal.timeout(8000) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "保存失败");
+    $("settings-key").value = "";
+    $("settings-result").textContent = "已保存，对之后创建的任务生效。";
+  } catch (error) { $("settings-result").textContent = error.message; }
+  finally { $("settings-save").disabled = false; }
+});
+
 void tick();

@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { ViewerSettings } from "./settings.js";
 import type { TaskService } from "../core/task-service.js";
 import { isBridgeError } from "../errors.js";
 import type { Logger } from "../logging.js";
@@ -16,9 +17,10 @@ const assets = new Map([
 export interface ViewerOptions {
   service: TaskService;
   logger: Logger;
+  settings?: ViewerSettings;
 }
 
-/** Read-only local UI. No filesystem, configuration or mutation endpoints. */
+/** Local transcript UI; authenticated settings updates are narrowly validated. */
 export class TaskViewer {
   private readonly token = randomBytes(32).toString("base64url");
   private readonly server = createServer((req, res) => {
@@ -81,12 +83,12 @@ export class TaskViewer {
       this.json(res, 403, { error: "仅允许本机同源访问" });
       return;
     }
-    if (req.method !== "GET") {
+    const url = new URL(req.url ?? "/", this.origin);
+    if (req.method !== "GET" && !(req.method === "PUT" && url.pathname === "/api/settings" && this.options.settings)) {
       res.setHeader("allow", "GET");
       this.json(res, 405, { error: "查看器只读" });
       return;
     }
-    const url = new URL(req.url ?? "/", this.origin);
     const asset = assets.get(url.pathname);
     if (asset !== undefined) {
       const body = await readFile(new URL(`./public/${asset.file}`, import.meta.url));
@@ -98,6 +100,26 @@ export class TaskViewer {
     const expected = Buffer.from(`Bearer ${this.token}`);
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
       this.json(res, 401, { error: "请使用 bridge viewer 打开的私有链接" });
+      return;
+    }
+    if (url.pathname === "/api/settings" && this.options.settings) {
+      if (req.method === "GET") {
+        this.json(res, 200, await this.options.settings.read());
+        return;
+      }
+      if (req.headers.origin !== this.origin || req.headers["content-type"] !== "application/json") {
+        this.json(res, 403, { error: "配置仅允许从本机页面保存" });
+        return;
+      }
+      let body = "";
+      for await (const chunk of req) {
+        body += String(chunk);
+        if (Buffer.byteLength(body) > 16 * 1024) { req.resume(); this.json(res, 413, { error: "配置过大" }); return; }
+      }
+      try {
+        await this.options.settings.save(JSON.parse(body));
+        this.json(res, 200, { ok: true });
+      } catch { this.json(res, 400, { error: "保存失败：请检查模型允许列表及输入格式" }); }
       return;
     }
     if (url.pathname === "/api/tasks") {

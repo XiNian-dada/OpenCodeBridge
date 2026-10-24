@@ -12,7 +12,7 @@
     <div class="brand"><span class="brand-mark" aria-hidden="true">▲</span><strong>Bridge</strong><span class="live"><i></i> LIVE</span></div>
     <div class="sidebar-heading">最近会话 <span id="task-count">0</span></div>
     <nav id="tasks" aria-label="委派会话列表"></nav>
-    <div class="sidebar-footer">Codex × OpenCode<br><span>只读查看 · 仅在本机运行</span></div>
+    <div class="sidebar-footer">Codex × OpenCode<br><span>仅在本机运行</span></div>
   </aside>
   <main>
     <header class="topbar">
@@ -22,6 +22,7 @@
         <div id="conversation-meta" class="meta-chips"></div>
       </div>
       <div class="topbar-actions">
+        <button id="settings-open" type="button" class="expand-output">配置</button>
         <label class="toggle"><input id="follow" type="checkbox" checked><span>自动跟随</span></label>
         <label class="toggle"><input id="show-system" type="checkbox"><span>全部审计事件</span></label>
       </div>
@@ -33,5 +34,20 @@
     <button id="jump" class="jump" type="button" hidden>↓ 回到底部</button>
     <footer><span id="updated">等待记录</span><span>记录沿用日志的脱敏和截断规则</span></footer>
   </main>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <h2 id="settings-title">Bridge 配置</h2>
+    <p id="settings-source" role="status">读取连接状态…</p>
+    <p>默认复用你在终端中的 OpenCode Console 登录，无需另配 Key。</p>
+    <form id="settings-form">
+      <label>默认模型<input id="settings-model" required maxlength="256" placeholder="opencode-go/deepseek-v4.1-flash"></label>
+      <p id="settings-allow"></p>
+      <label>独立 Go API Key（可选）<input id="settings-key" type="password" autocomplete="new-password" maxlength="4096" placeholder="留空保留现有设置；已有 Key 不会回显"></label>
+      <label class="toggle"><input id="settings-clear-key" type="checkbox">清除独立 Key，恢复使用现有登录</label>
+      <p>Key 仅保存在本机配置文件，供 Bridge 网关使用，不发送给子代理。</p>
+      <p id="settings-result" role="status"></p>
+      <button id="settings-save" type="submit" class="expand-output">保存</button>
+      <button id="settings-close" type="button" class="expand-output">关闭</button>
+    </form>
+  </dialog>
 </body>
 </html>
