@@ -768,7 +768,7 @@ export class TaskManager {
           policySnapshot !== null &&
           typeof (policySnapshot as Record<string, unknown>).config_revision === "string"
             ? ((policySnapshot as Record<string, unknown>).config_revision as string)
-            : this.options.config.config_revision ?? null,
+            : null,
       },
       path_policy: {
         per_file_scope: task.write_paths.length > 0,
