@@ -10,10 +10,15 @@ export const MAX_CONTEXT_TOTAL_BYTES = 8 * 1024 * 1024;
 
 /** Validate and normalize repository-relative context paths without touching disk. */
 export function normalizeContextPaths(files: readonly string[]): string[] {
+  return normalizeRepoPaths(files, "context_files");
+}
+
+/** Validate and normalize repository-relative paths without touching disk. */
+export function normalizeRepoPaths(files: readonly string[], label: string): string[] {
   if (files.length > MAX_CONTEXT_FILES) {
     throw new BridgeError(
       "INVALID_ARGUMENT",
-      `context_files is limited to ${MAX_CONTEXT_FILES} files`,
+      `${label} is limited to ${MAX_CONTEXT_FILES} files`,
       { details: { count: files.length } },
     );
   }
@@ -21,17 +26,18 @@ export function normalizeContextPaths(files: readonly string[]): string[] {
   const seen = new Set<string>();
   for (const raw of files) {
     if (typeof raw !== "string" || raw.trim() === "") {
-      throw new BridgeError("INVALID_ARGUMENT", "context_files entries must be non-empty strings");
+      throw new BridgeError("INVALID_ARGUMENT", `${label} entries must be non-empty strings`);
     }
     const value = raw.trim().replaceAll("\\", "/");
     if (isAbsolute(value) || /^[A-Za-z]:\//.test(value)) {
-      throw new BridgeError("INVALID_ARGUMENT", `context file must be repository-relative: ${raw}`);
+      throw new BridgeError("INVALID_ARGUMENT", `${label} entry must be repository-relative: ${raw}`);
     }
+    const directory = value.endsWith("/");
     const segments = value.split("/").filter((part) => part !== "" && part !== ".");
     if (segments.length === 0 || segments.includes("..")) {
-      throw new BridgeError("INVALID_ARGUMENT", `unsafe context file path: ${raw}`);
+      throw new BridgeError("INVALID_ARGUMENT", `unsafe ${label} path: ${raw}`);
     }
-    const relative = segments.join("/");
+    const relative = `${segments.join("/")}${directory ? "/" : ""}`;
     if (seen.has(relative)) continue;
     seen.add(relative);
     normalized.push(relative);

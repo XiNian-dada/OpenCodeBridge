@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-export type FakeScenario = "success" | "abort" | "error";
+export type FakeScenario = "success" | "abort" | "error" | "followup-delay";
 
 interface FakeSession {
   id: string;
@@ -52,15 +52,26 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
       content: [{ type: "text", text: `Fake task completed turn ${turn}` }],
     });
     session.tokens = {
-      input: 10,
-      output: 5,
-      reasoning: 0,
-      cache: { read: 0, write: 0 },
+      input: session.tokens.input + 10,
+      output: session.tokens.output + 5,
+      reasoning: session.tokens.reasoning,
+      cache: { ...session.tokens.cache },
     };
-    session.cost = 0.003;
+    session.cost += 0.003;
     session.idle = true;
     session.outcome = "succeeded";
     session.updated = Date.now();
+    emit(session.id, "session.step.ended", {
+      finish: "stop",
+      rawFinish: "stop",
+      cost: session.cost,
+      tokens: session.tokens,
+    });
+    emit(session.id, "session.usage.updated", {
+      cost: session.cost,
+      tokens: session.tokens,
+    });
+    emit(session.id, "session.execution.succeeded", {});
     emit(session.id, "session.idle", {});
   }
 
@@ -170,7 +181,8 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
         });
         json(res, 200, { data: { id: "inbox", sessionID: session.id } });
 
-        if (scenario === "success") {
+        const turn = session.messages.filter((message) => message.type === "user").length;
+        if (scenario === "success" || (scenario === "followup-delay" && turn === 1)) {
           setTimeout(() => {
             emit(session.id, "session.tool.called", {
               callID: "call_1",
@@ -184,6 +196,17 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
             });
             complete(session);
           }, 25);
+        } else if (scenario === "followup-delay" && turn > 1) {
+          // Reproduce the follow-up inbox window: the session is not active and
+          // a stale idle event arrives before the new assistant answer exists.
+          session.idle = true;
+          session.updated = Date.now();
+          setTimeout(() => emit(session.id, "session.idle", {}), 0);
+          setTimeout(() => {
+            session.idle = false;
+            session.updated = Date.now();
+            complete(session);
+          }, 350);
         } else if (scenario === "error") {
           setTimeout(() => {
             session.idle = true;

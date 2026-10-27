@@ -34,6 +34,7 @@ import {
 } from "./model-resolver.js";
 import { consoleCredential } from "./console-credential.js";
 import { startModelGateway, type ModelGateway } from "./model-gateway.js";
+import { absoluteWriteResources } from "../core/path-contract.js";
 import {
   startManagedOpenCodeServer,
   versionMatches,
@@ -76,12 +77,36 @@ function protectedOpenCodePaths(): string[] {
   ];
 }
 
-function permissionsFor(readOnly: boolean): Array<{
+function permissionsFor(
+  task: TaskRecord,
+  workspace: string,
+): Array<{
   action: string;
   resource: string;
   effect: "allow" | "deny";
 }> {
-  const base = readOnly ? READ_ONLY_PERMISSIONS : WRITABLE_PERMISSIONS;
+  const base = task.read_only
+    ? READ_ONLY_PERMISSIONS
+    : task.write_paths.length > 0
+      ? [
+          { action: "*", resource: "*", effect: "deny" as const },
+          { action: "read", resource: "*", effect: "allow" as const },
+          { action: "glob", resource: "*", effect: "allow" as const },
+          { action: "grep", resource: "*", effect: "allow" as const },
+          { action: "edit", resource: "*", effect: "deny" as const },
+          { action: "write", resource: "*", effect: "deny" as const },
+          { action: "patch", resource: "*", effect: "deny" as const },
+          ...absoluteWriteResources(workspace, task.write_paths).flatMap((resource) =>
+            ["edit", "write", "patch"].map((action) => ({
+              action,
+              resource,
+              effect: "allow" as const,
+            })),
+          ),
+          { action: "read", resource: "*.env", effect: "deny" as const },
+          { action: "read", resource: "*.env.*", effect: "deny" as const },
+        ]
+      : WRITABLE_PERMISSIONS;
   const protectedRules = protectedOpenCodePaths().flatMap((path) =>
     [path, `${path}/*`, `${path}/**`].flatMap((resource) =>
       ["read", "glob", "grep"].map((action) => ({
@@ -101,6 +126,16 @@ interface Deferred<T> {
   resolve(value: T): void;
 }
 
+interface UsageBaseline {
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number | null;
+  modelCalls: number;
+}
+
 interface ActiveRun {
   sessionId: string;
   client: OpenCodeHttpClient;
@@ -113,6 +148,13 @@ interface ActiveRun {
   errorMessage: string | null;
   gateway: boolean;
   modelCost: OpenCodeModelCost[] | null;
+  baseline: UsageBaseline;
+  baselineMessageIds: Set<string>;
+  baselineMessageCount: number;
+  baselineOutcome: string | null;
+  promptStartedAt: number | null;
+  turnSteps: number;
+  executionSucceeded: boolean;
 }
 
 export interface OpenCodeAdapterOptions {
@@ -145,6 +187,66 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       { once: true },
     );
   });
+}
+
+const ZERO_USAGE_BASELINE: UsageBaseline = {
+  input: 0,
+  output: 0,
+  reasoning: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  costUsd: null,
+  modelCalls: 0,
+};
+
+function usageBaseline(session: OpenCodeSession, messages: OpenCodeMessage[]): UsageBaseline {
+  const tokens = session.tokens;
+  return {
+    input: tokens?.input ?? 0,
+    output: tokens?.output ?? 0,
+    reasoning: tokens?.reasoning ?? 0,
+    cacheRead: tokens?.cache?.read ?? 0,
+    cacheWrite: tokens?.cache?.write ?? 0,
+    costUsd: typeof session.cost === "number" ? session.cost : null,
+    modelCalls: messages.filter((message) => roleOf(message) === "assistant").length,
+  };
+}
+
+function messageIdOf(message: OpenCodeMessage): string | null {
+  const direct = message.id;
+  if (typeof direct === "string" && direct !== "") return direct;
+  const payload = message.payload;
+  if (typeof payload === "object" && payload !== null) {
+    const id = (payload as Record<string, unknown>).id;
+    if (typeof id === "string" && id !== "") return id;
+  }
+  return null;
+}
+
+function currentTurnMessages(run: ActiveRun, messages: OpenCodeMessage[]): OpenCodeMessage[] {
+  const sorted = [...messages].sort((a, b) => messageCreatedAt(a) - messageCreatedAt(b));
+  const promptStartedAt = run.promptStartedAt ?? Date.now();
+  const cutoff = Math.max(0, promptStartedAt - 1_000);
+  const result: OpenCodeMessage[] = [];
+
+  for (let index = 0; index < sorted.length; index++) {
+    const message = sorted[index];
+    if (message === undefined) continue;
+    const id = messageIdOf(message);
+    if (id !== null && run.baselineMessageIds.has(id)) continue;
+    const created = messageCreatedAt(message);
+    if (created > 0) {
+      if (created >= cutoff) result.push(message);
+      continue;
+    }
+    // Older APIs may omit stable IDs/timestamps. Fall back to position.
+    if (index >= run.baselineMessageCount) result.push(message);
+  }
+  return result;
+}
+
+function hasCurrentTurnAssistant(run: ActiveRun, messages: OpenCodeMessage[]): boolean {
+  return currentTurnMessages(run, messages).some((message) => roleOf(message) === "assistant");
 }
 
 interface PreparedBackend {
@@ -200,11 +302,17 @@ export class OpenCodeAdapter implements AgentAdapter {
       "You are executing a delegated task under bridge-enforced constraints.",
       `Task ID: ${task.id}`,
       `Task type: ${task.task_type}`,
-      `Workspace: ${task.context_path ?? task.worktree_path ?? task.repo_root}`,
+      `Workspace: ${task.workspace_path ?? task.context_path ?? task.worktree_path ?? task.repo_root}`,
       task.read_only
         ? "Mode: READ-ONLY. Do not modify files. Do not run commands that modify files."
         : "Mode: WRITABLE (edit-only). Modify files only inside this workspace; never run shell commands.",
       "Do not access paths outside the workspace, use network tools, launch subagents, or change configuration.",
+      ...(task.write_paths.length > 0
+        ? [`Allowed edit paths: ${task.write_paths.join(", ")}. Do not edit any other path.`]
+        : []),
+      ...(task.read_paths.length > 0
+        ? [`Declared read paths: ${task.read_paths.join(", ")}.`]
+        : []),
       "If the task cannot be completed within these constraints, report the blocker instead of expanding scope.",
       "For review or analysis findings, report every issue with:",
       "Location: path:line",
@@ -264,8 +372,8 @@ export class OpenCodeAdapter implements AgentAdapter {
     }
 
     const dataDir = resolveDataDir(this.options.config);
-    const permissions = permissionsFor(task.read_only);
-    const workspace = task.context_path ?? task.worktree_path ?? task.repo_root;
+    const workspace = task.workspace_path ?? task.context_path ?? task.worktree_path ?? task.repo_root;
+    const permissions = permissionsFor(task, workspace);
     let backend = await this.prepareBackend(task, workspace, dataDir, permissions, context);
     let server: ManagedOpenCodeServer | null = null;
     let run: ActiveRun | null = null;
@@ -341,6 +449,27 @@ export class OpenCodeAdapter implements AgentAdapter {
         });
       }
 
+      const baselineMessages = task.session_id === null
+        ? []
+        : await server.client.messages(session.id, 200).catch((error: unknown) => {
+            context.emit({
+              source: "bridge",
+              event_type: "opencode.baseline_read_failed",
+              payload: { message: error instanceof Error ? error.message : String(error) },
+            });
+            throw new BridgeError(
+              "SESSION_LOST",
+              "Could not establish a baseline for the resumed session; refusing to risk a stale answer",
+              { cause: error, details: { task_id: task.id, session_id: session.id } },
+            );
+          });
+      const baseline = usageBaseline(session, baselineMessages);
+      const baselineMessageIds = new Set(
+        baselineMessages
+          .map(messageIdOf)
+          .filter((id): id is string => id !== null),
+      );
+
       run = {
         sessionId: session.id,
         client: server.client,
@@ -353,6 +482,13 @@ export class OpenCodeAdapter implements AgentAdapter {
         errorMessage: null,
         gateway: backend.gateway !== null,
         modelCost: Array.isArray(model.cost) ? model.cost : null,
+        baseline,
+        baselineMessageIds,
+        baselineMessageCount: baselineMessages.length,
+        baselineOutcome: typeof session.outcome === "string" ? session.outcome : null,
+        promptStartedAt: null,
+        turnSteps: 0,
+        executionSucceeded: false,
       };
       this.active.set(session.id, run);
       ensureNotAborted(context.signal);
@@ -366,17 +502,23 @@ export class OpenCodeAdapter implements AgentAdapter {
       });
 
       const eventsPromise = this.consumeEvents(run, context);
-      const pollPromise = this.pollUntilIdle(run);
       const abortPromise = this.abortSignal(context.signal);
+      let pollPromise: Promise<CompletionReason> | null = null;
 
       try {
         ensureNotAborted(context.signal);
+        run.promptStartedAt = Date.now();
         await run.client.prompt(session.id, { text: prompt });
         context.emit({
           source: "opencode",
           event_type: "opencode.prompt.admitted",
-          payload: { session_id: session.id },
+          payload: { session_id: session.id, prompt_started_at: run.promptStartedAt },
         });
+
+        // Only start polling after the prompt is admitted. Polling before that
+        // observes the previous turn's idle state and can complete the new turn
+        // with the old assistant answer.
+        pollPromise = this.pollUntilIdle(run);
 
         const reason = await Promise.race([
           run.completion.promise,
@@ -385,9 +527,16 @@ export class OpenCodeAdapter implements AgentAdapter {
         ]);
 
         if (reason === "aborted" || run.abortRequested) {
+          const aborted = await this.readUsage(run, true);
+          context.emit({
+            source: "opencode",
+            event_type: "usage.updated",
+            payload: { usage: aborted.usage, session_usage: aborted.session_usage },
+          });
           return {
             summary: "OpenCode task was aborted",
-            usage: await this.readUsage(run, false),
+            usage: aborted.usage,
+            session_usage: aborted.session_usage,
             stopped: true,
           };
         }
@@ -401,9 +550,18 @@ export class OpenCodeAdapter implements AgentAdapter {
           throw new BridgeError("ADAPTER_ERROR", "OpenCode reported a failed session");
         }
         if (finalSession.session?.outcome === "interrupted") {
+          context.emit({
+            source: "opencode",
+            event_type: "usage.updated",
+            payload: {
+              usage: finalSession.usage,
+              session_usage: finalSession.session_usage,
+            },
+          });
           return {
             summary: "OpenCode session was interrupted",
             usage: finalSession.usage,
+            session_usage: finalSession.session_usage,
             stopped: true,
           };
         }
@@ -412,18 +570,25 @@ export class OpenCodeAdapter implements AgentAdapter {
         context.emit({
           source: "opencode",
           event_type: "usage.updated",
-          payload: { usage: finalSession.usage },
+          payload: {
+            usage: finalSession.usage,
+            session_usage: finalSession.session_usage,
+          },
         });
         return {
           summary,
           usage: finalSession.usage,
+          session_usage: finalSession.session_usage,
         };
       } finally {
         run.finished = true;
         run.eventsAbort.abort();
         run.pollAbort.abort();
         this.active.delete(session.id);
-        await Promise.allSettled([eventsPromise, pollPromise]);
+        await Promise.allSettled([
+          eventsPromise,
+          ...(pollPromise === null ? [] : [pollPromise]),
+        ]);
       }
     } catch (error) {
       if (context.signal.aborted) {
@@ -709,19 +874,62 @@ export class OpenCodeAdapter implements AgentAdapter {
     try {
       for await (const event of run.client.events(run.eventsAbort.signal)) {
         if (!isEventForSession(event, run.sessionId)) continue;
+        // Events can be replayed when the SSE stream reconnects. Do not let a
+        // previous turn's idle/usage/error state complete or charge this turn.
+        if (run.promptStartedAt === null) continue;
+
+        if (event.type === "session.step.ended") {
+          run.turnSteps += 1;
+        }
+        if (event.type === "session.execution.succeeded") {
+          run.executionSucceeded = true;
+        }
+        if (event.type === "session.usage.updated") {
+          const cumulative = usageFromEventData(event.data);
+          if (cumulative !== null) {
+            const usage = usageFromCumulative(
+              cumulative,
+              run.baseline,
+              run.modelCost,
+              run.gateway,
+              run.turnSteps,
+            );
+            const sessionUsage = usageFromCumulative(
+              cumulative,
+              ZERO_USAGE_BASELINE,
+              run.modelCost,
+              run.gateway,
+              Math.max(run.baseline.modelCalls + run.turnSteps, 0),
+            );
+            context.emit({
+              source: "opencode",
+              event_type: "usage.updated",
+              payload: { usage, session_usage: sessionUsage },
+            });
+          }
+          continue;
+        }
 
         const mapped = mapOpenCodeEvent(event);
-        if (mapped !== null) context.emit(mapped);
+
+        if (isIdleEvent(event)) {
+          const messages = await run.client
+            .messages(run.sessionId, 200, run.eventsAbort.signal)
+            .catch(() => []);
+          if (!hasCurrentTurnAssistant(run, messages)) continue;
+          if (mapped !== null) context.emit(mapped);
+          run.completion.resolve("idle");
+          return;
+        }
 
         if (isErrorEvent(event)) {
+          if (mapped !== null) context.emit(mapped);
           run.errorMessage = eventErrorMessage(event);
           run.completion.resolve("error");
           return;
         }
-        if (isIdleEvent(event)) {
-          run.completion.resolve("idle");
-          return;
-        }
+
+        if (mapped !== null) context.emit(mapped);
       }
     } catch (error) {
       if (run.eventsAbort.signal.aborted) return;
@@ -742,11 +950,20 @@ export class OpenCodeAdapter implements AgentAdapter {
         const active = await run.client.activeSessions(run.pollAbort.signal);
         if (run.sessionId in active) continue;
 
-        const messages = await run.client.messages(run.sessionId, 100, run.pollAbort.signal);
-        if (messages.some((message) => roleOf(message) === "assistant")) return "idle";
+        const messages = await run.client.messages(run.sessionId, 200, run.pollAbort.signal);
+        if (hasCurrentTurnAssistant(run, messages)) return "idle";
 
         const session = await run.client.session(run.sessionId, run.pollAbort.signal);
-        if (session.time?.idle !== undefined || session.outcome !== undefined) return "idle";
+        const outcome = typeof session.outcome === "string" ? session.outcome : null;
+        if (
+          (outcome === "failed" || outcome === "interrupted") &&
+          outcome !== run.baselineOutcome
+        ) {
+          return "idle";
+        }
+        // A session that is merely not active, already had the same outcome in
+        // the previous turn, or reports a stale idle state is not evidence that
+        // this turn produced a new assistant message.
       } catch {
         if (run.pollAbort.signal.aborted) return "aborted";
       }
@@ -767,6 +984,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   private async readFinalSession(run: ActiveRun, context: AdapterContext): Promise<{
     session: OpenCodeSession | null;
     usage: TaskUsage;
+    session_usage: TaskUsage;
     summary: string | null;
   }> {
     let session: OpenCodeSession | null = null;
@@ -786,6 +1004,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       return {
         session: null,
         usage: emptyUsage(),
+        session_usage: emptyUsage(),
         summary: `OpenCode completed, but result readback failed: ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -793,9 +1012,13 @@ export class OpenCodeAdapter implements AgentAdapter {
     }
 
     // The live 2.1 API lists newest messages first; mocks/older APIs may not.
-    // Sort chronologically before selecting the latest assistant answer.
-    messages.sort((a, b) => messageCreatedAt(a) - messageCreatedAt(b));
-    for (const message of messages.slice(-50)) {
+    // Only this turn's messages are emitted; replaying previous turns makes a
+    // follow-up look completed before it produced an answer.
+    const allMessages = [...messages].sort(
+      (a, b) => messageCreatedAt(a) - messageCreatedAt(b),
+    );
+    const turnMessages = currentTurnMessages(run, allMessages);
+    for (const message of turnMessages.slice(-50)) {
       const role = roleOf(message);
       const text = textOf(message);
       if (role === null || text === null) continue;
@@ -806,8 +1029,23 @@ export class OpenCodeAdapter implements AgentAdapter {
       });
     }
 
-    const usage = usageFromSession(session, messages, run.modelCost, run.gateway);
-    const assistantTexts = messages
+    const usage = usageFromSession(
+      session,
+      turnMessages,
+      run.modelCost,
+      run.gateway,
+      run.baseline,
+      run.turnSteps,
+    );
+    const sessionUsage = usageFromSession(
+      session,
+      allMessages,
+      run.modelCost,
+      run.gateway,
+      ZERO_USAGE_BASELINE,
+      allMessages.filter((message) => roleOf(message) === "assistant").length,
+    );
+    const assistantTexts = turnMessages
       .filter((message) => roleOf(message) === "assistant")
       .map((message) => textOf(message))
       .filter((text): text is string => text !== null && text.trim() !== "");
@@ -815,17 +1053,40 @@ export class OpenCodeAdapter implements AgentAdapter {
     return {
       session,
       usage,
+      session_usage: sessionUsage,
       summary: assistantTexts.at(-1) ?? null,
     };
   }
 
-  private async readUsage(run: ActiveRun, includeMessages: boolean): Promise<TaskUsage> {
+  private async readUsage(
+    run: ActiveRun,
+    includeMessages: boolean,
+  ): Promise<{ usage: TaskUsage; session_usage: TaskUsage }> {
     try {
       const session = await run.client.session(run.sessionId);
-      const messages = includeMessages ? await run.client.messages(run.sessionId, 200) : [];
-      return usageFromSession(session, messages, run.modelCost, run.gateway);
+      const allMessages = includeMessages
+        ? await run.client.messages(run.sessionId, 200)
+        : [];
+      return {
+        usage: usageFromSession(
+          session,
+          currentTurnMessages(run, allMessages),
+          run.modelCost,
+          run.gateway,
+          run.baseline,
+          run.turnSteps,
+        ),
+        session_usage: usageFromSession(
+          session,
+          allMessages,
+          run.modelCost,
+          run.gateway,
+          ZERO_USAGE_BASELINE,
+          allMessages.filter((message) => roleOf(message) === "assistant").length,
+        ),
+      };
     } catch {
-      return emptyUsage();
+      return { usage: emptyUsage(), session_usage: emptyUsage() };
     }
   }
 }
@@ -935,19 +1196,92 @@ function usageFromSession(
   messages: OpenCodeMessage[],
   modelCost: OpenCodeModelCost[] | null = null,
   gateway = false,
+  baseline: UsageBaseline = ZERO_USAGE_BASELINE,
+  modelCalls = 0,
 ): TaskUsage {
   const tokens = session.tokens;
-  const input = tokens?.input ?? 0;
-  const output = tokens?.output ?? 0;
-  const reasoning = tokens?.reasoning ?? 0;
-  const cacheRead = tokens?.cache?.read ?? 0;
-  const cacheWrite = tokens?.cache?.write ?? 0;
+  const cumulative = {
+    input: tokens?.input ?? 0,
+    output: tokens?.output ?? 0,
+    reasoning: tokens?.reasoning ?? 0,
+    cacheRead: tokens?.cache?.read ?? 0,
+    cacheWrite: tokens?.cache?.write ?? 0,
+    costUsd: typeof session.cost === "number" ? session.cost : null,
+  };
   const calls = Math.max(
+    modelCalls,
     messages.filter((message) => roleOf(message) === "assistant").length,
-    input > 0 || output > 0 ? 1 : 0,
+    cumulative.input > 0 || cumulative.output > 0 ? 1 : 0,
   );
-  const gatewayCost = gateway ? calculateCost(input, output, reasoning, cacheRead, cacheWrite, modelCost) : null;
-  const sessionCost = typeof session.cost === "number" ? session.cost : null;
+  return usageFromCumulative(cumulative, baseline, modelCost, gateway, calls);
+}
+
+interface CumulativeUsage {
+  input: number;
+  output: number;
+  reasoning: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number | null;
+}
+
+function usageFromEventData(value: unknown): CumulativeUsage | null {
+  const data = asRecord(value);
+  const usage = recordOrNull(data.usage);
+  const tokens =
+    recordOrNull(data.tokens) ??
+    recordOrNull(usage?.tokens) ??
+    usage ??
+    data;
+  const cache = recordOrNull(tokens.cache) ?? {};
+  const input = numberField(tokens, "input") ?? numberField(tokens, "input_tokens");
+  const output = numberField(tokens, "output") ?? numberField(tokens, "output_tokens");
+  if (input === null && output === null) return null;
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    reasoning:
+      numberField(tokens, "reasoning") ??
+      numberField(tokens, "reasoning_tokens") ??
+      0,
+    cacheRead:
+      numberField(cache, "read") ?? numberField(tokens, "cache_read_tokens") ?? 0,
+    cacheWrite:
+      numberField(cache, "write") ?? numberField(tokens, "cache_write_tokens") ?? 0,
+    costUsd:
+      numberField(data, "cost") ??
+      numberField(usage ?? {}, "cost") ??
+      numberField(data, "cost_usd") ??
+      numberField(usage ?? {}, "cost_usd"),
+  };
+}
+
+function usageFromCumulative(
+  cumulative: CumulativeUsage,
+  baseline: UsageBaseline,
+  modelCost: OpenCodeModelCost[] | null,
+  gateway: boolean,
+  modelCalls: number,
+): TaskUsage {
+  const input = Math.max(0, cumulative.input - baseline.input);
+  const output = Math.max(0, cumulative.output - baseline.output);
+  const reasoning = Math.max(0, cumulative.reasoning - baseline.reasoning);
+  const cacheRead = Math.max(0, cumulative.cacheRead - baseline.cacheRead);
+  const cacheWrite = Math.max(0, cumulative.cacheWrite - baseline.cacheWrite);
+  const gatewayCost = gateway
+    ? calculateCost(input, output, reasoning, cacheRead, cacheWrite, modelCost)
+    : null;
+  const directCost =
+    cumulative.costUsd === null
+      ? null
+      : baseline.costUsd === null
+        ? cumulative.costUsd
+        : Math.max(0, cumulative.costUsd - baseline.costUsd);
+  const costUsd = gateway ? gatewayCost : directCost;
+  const calls = Math.max(
+    modelCalls,
+    input > 0 || output > 0 || reasoning > 0 ? 1 : 0,
+  );
 
   return {
     input_tokens: input,
@@ -957,9 +1291,24 @@ function usageFromSession(
     cache_write_tokens: cacheWrite,
     total_tokens: input + output + reasoning,
     model_calls: calls,
-    cost_usd: gateway ? gatewayCost : sessionCost,
-    cost_known: gateway ? gatewayCost !== null : sessionCost !== null,
+    cost_usd: costUsd,
+    cost_known: gateway ? gatewayCost !== null : costUsd !== null,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return recordOrNull(value) ?? {};
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function calculateCost(

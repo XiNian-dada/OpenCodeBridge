@@ -33,7 +33,10 @@ function task(): TaskRecord {
     worktree_git_dir: "/tmp/repo/.git/worktrees/task_store_test",
     base_commit: "a".repeat(40),
     context_path: null,
+    workspace_path: null,
     context_files: [],
+    read_paths: [],
+    write_paths: [],
     created_at: now,
     started_at: now,
     ended_at: now,
@@ -55,6 +58,8 @@ describe("SqliteStore", () => {
       const store = openSqliteStore(path);
       expect((await stat(path)).mode & 0o777).toBe(0o600);
       const record = task();
+      record.read_paths = ["README.md"];
+      record.write_paths = ["src/"];
       store.saveTask(record);
       store.appendEvent({
         event_id: "evt_1",
@@ -80,6 +85,8 @@ describe("SqliteStore", () => {
         status: "completed",
         session_id: "ses_store",
         server_pid: 1234,
+        read_paths: ["README.md"],
+        write_paths: ["src/"],
         usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.01 },
       });
       expect(events).toHaveLength(1);

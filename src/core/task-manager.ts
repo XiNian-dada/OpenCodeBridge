@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readFile, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
 import type { BridgeConfig } from "../config.js";
 import type { DiffManager } from "../git/diff-manager.js";
 import type { TaskDiffResult, TaskHistoryResult } from "./task-service.js";
@@ -10,6 +10,7 @@ import { resolveDataDir } from "../paths.js";
 import type { WorktreeManager } from "../git/worktree-manager.js";
 import { BridgeError, isBridgeError, toErrorPayload } from "../errors.js";
 import type { Logger } from "../logging.js";
+import { buildInfo } from "../build-info.js";
 import { isProviderPattern, type ModelPolicy } from "../policy/model-policy.js";
 import type { PathPolicy } from "../policy/path-policy.js";
 import type {
@@ -55,16 +56,27 @@ import { TaskQueue } from "./task-queue.js";
 import {
   inspectContextFiles,
   normalizeContextPaths,
+  normalizeRepoPaths,
   writeContextSnapshot,
 } from "./context-snapshot.js";
 import { parseReviewFindings } from "./findings.js";
+import {
+  readDeliverySnapshot,
+  writeDeliverySnapshot,
+  type DeliverySnapshot,
+} from "./delivery-snapshot.js";
+import { DEFAULT_PROTECTED_PATHS, scopeViolations, type PathContract } from "./path-contract.js";
 
 interface RunHandle {
   controller: AbortController;
   session: AdapterSession | null;
   stopReason: "abort" | "timeout" | "budget" | null;
   abortConfirmed: boolean | null;
+  executionSucceeded: boolean;
 }
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const SNAPSHOT_MAX_PATCH_CHARS = 10_000_000;
 
 export interface TaskManagerOptions {
   config: BridgeConfig;
@@ -89,6 +101,7 @@ export class TaskManager {
   private readonly idFactory: () => string;
   private readonly store: SqliteStore | undefined;
   private readonly approvals = new Map<string, ApprovalRecord>();
+  private readonly budgetThresholds = new Map<string, number>();
   private shuttingDown = false;
   private providerPause: { code: string; message: string; at: string } | null = null;
 
@@ -106,6 +119,11 @@ export class TaskManager {
     return {
       adapter: adapter.name,
       simulated,
+      build: {
+        ...buildInfo(),
+        config_path: config.config_path ?? null,
+        config_revision: config.config_revision ?? null,
+      },
       models: {
         default: config.models.default,
         allowed: config.models.allow.map((model) => {
@@ -151,22 +169,116 @@ export class TaskManager {
               : "gateway_configured",
         model_gateway: config.security.model_gateway,
       },
-      limitations: simulated
-        ? ["Mock results and tool events are simulated; no real model or code execution."]
-        : [
-            "Model IDs are configured policy entries, not a live provider availability or quota check.",
-            ...(adapter.supportsReadIsolation === true
-              ? [
-                  "Read-only tasks use a macOS Seatbelt denylist: the user home, external mounts, and system temp are hidden, but the OpenCode process still needs its provider auth/config directories to call the model. Tool access to those directories is denied.",
-                ]
-              : [
-                  "Read access is not confined by an OS sandbox; per-file delegation scope is not enforced.",
-                ]),
-            "Model calls require network access; worker web, shell, subagent, and external-directory tools are denied.",
-            "Writable tasks are edit-only; Codex must run tests and review and integrate the diff.",
-            "Internal OpenCode model calls are not independently verified by this capability query.",
-            "Budgets are soft; unknown provider cost cannot be enforced as a hard spending cap.",
-          ],
+      limitations: [
+        ...(simulated
+          ? ["Mock results and tool events are simulated; no real model or code execution."]
+          : [
+              "Model IDs are configured policy entries, not a live provider availability or quota check.",
+              ...(adapter.supportsReadIsolation === true
+                ? [
+                    "Read-only tasks use a macOS Seatbelt denylist: the user home, external mounts, and system temp are hidden, but the OpenCode process still needs its provider auth/config directories to call the model. Tool access to those directories is denied.",
+                  ]
+                : [
+                    "Read access is not confined by an OS sandbox; per-file delegation scope is not enforced.",
+                  ]),
+              "Model calls require network access; worker web, shell, subagent, and external-directory tools are denied.",
+              "Writable tasks are edit-only; Codex must run tests and review and integrate the diff.",
+              "Internal OpenCode model calls are not independently verified by this capability query.",
+              "Budgets are soft; unknown provider cost cannot be enforced as a hard spending cap.",
+            ]),
+        config.scheduler.default_timeout_seconds === 0
+          ? "Task execution has no automatic timeout; use agent_abort to stop a running task."
+          : `New tasks receive a ${config.scheduler.default_timeout_seconds}s default hard timeout; pass timeout_seconds: 0 to disable it.`,
+      ],
+    };
+  }
+
+  private policySnapshot(): Record<string, unknown> {
+    const { config, adapter } = this.options;
+    return {
+      config_revision: config.config_revision ?? null,
+      adapter: adapter.name,
+      model_gateway: config.security.model_gateway,
+      read_sandbox: config.security.read_sandbox,
+      max_tokens: config.models.max_tokens,
+      max_cost_usd: config.models.max_cost_usd,
+      default_timeout_seconds: config.scheduler.default_timeout_seconds,
+      max_timeout_seconds: config.scheduler.max_timeout_seconds,
+    };
+  }
+
+  private async resolveManagedWorkspace(
+    sourceTaskId: string,
+    requestedRepoRoot: string,
+    readOnly: boolean,
+  ): Promise<{
+    repo_root: string;
+    git_top_level: string | null;
+    base_commit: string | null;
+    workspace_path: string;
+  }> {
+    if (!readOnly) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "workspace_from_task_id is read-only; use agent_message to continue a writable lineage",
+      );
+    }
+    const source = this.requireTask(sourceTaskId);
+    if (!isTerminal(source.status)) {
+      throw new BridgeError("TASK_BUSY", "Source task is still active", {
+        details: { source_task_id: sourceTaskId, status: source.status },
+      });
+    }
+    const requested = await this.options.pathPolicy.resolveRepoRoot(requestedRepoRoot, true);
+    if (requested.repo_root !== source.repo_root) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "workspace_from_task_id belongs to a different repository",
+        {
+          details: {
+            source_task_id: sourceTaskId,
+            source_repo_root: source.repo_root,
+            requested_repo_root: requested.repo_root,
+          },
+        },
+      );
+    }
+    const recorded = source.worktree_path ?? source.context_path ?? source.workspace_path;
+    if (recorded === null) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "Source task has no reusable managed workspace",
+        { details: { source_task_id: sourceTaskId } },
+      );
+    }
+    const workspace = await realpath(recorded).catch((error: unknown) => {
+      throw new BridgeError("REPO_NOT_FOUND", "Managed workspace no longer exists", {
+        cause: error,
+        details: { source_task_id: sourceTaskId, workspace: recorded },
+      });
+    });
+    const dataDir = resolveDataDir(this.options.config);
+    const managed =
+      isWithinPath(join(dataDir, "worktrees"), workspace) ||
+      isWithinPath(join(dataDir, "tasks"), workspace);
+    if (!managed || workspace !== recorded) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "Workspace is not owned by this Bridge task",
+        { details: { source_task_id: sourceTaskId, workspace } },
+      );
+    }
+    const info = await stat(workspace);
+    if (!info.isDirectory()) {
+      throw new BridgeError("REPO_NOT_FOUND", "Managed workspace is not a directory", {
+        details: { source_task_id: sourceTaskId, workspace },
+      });
+    }
+    return {
+      repo_root: source.repo_root,
+      git_top_level: source.repo_root,
+      base_commit: source.base_commit,
+      workspace_path: workspace,
     };
   }
 
@@ -176,10 +288,24 @@ export class TaskManager {
     const simulated = adapter.name === "mock";
     const model = modelPolicy.resolve(input.model);
     const contextFiles = normalizeContextPaths(input.context_files ?? []);
+    const readPaths = normalizeRepoPaths(input.read_paths ?? [], "read_paths");
+    const writePaths = normalizeRepoPaths(input.write_paths ?? [], "write_paths");
     if (!input.read_only && contextFiles.length > 0) {
       throw new BridgeError(
         "INVALID_ARGUMENT",
         "context_files is only supported for read-only tasks",
+      );
+    }
+    if (input.read_only && writePaths.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "write_paths is only supported for writable tasks",
+      );
+    }
+    if (input.workspace_from_task_id !== undefined && contextFiles.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "workspace_from_task_id cannot be combined with context_files",
       );
     }
 
@@ -202,14 +328,25 @@ export class TaskManager {
       );
     }
 
-    const repo = await pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
+    const managedWorkspace =
+      input.workspace_from_task_id === undefined
+        ? null
+        : await this.resolveManagedWorkspace(
+            input.workspace_from_task_id,
+            input.repo_root,
+            input.read_only,
+          );
+    const repo = managedWorkspace ?? await pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
     const contextEntries =
       contextFiles.length === 0
         ? []
         : await inspectContextFiles(repo.repo_root, contextFiles);
     let gitTopLevel = repo.git_top_level;
     let baseCommit = repo.base_commit;
-    if (input.read_only) {
+    if (managedWorkspace !== null) {
+      gitTopLevel = managedWorkspace.git_top_level;
+      baseCommit = managedWorkspace.base_commit;
+    } else if (input.read_only) {
       const git = await pathPolicy.inspectGit(repo.repo_root);
       gitTopLevel = git.top_level;
       baseCommit = git.head;
@@ -266,6 +403,22 @@ export class TaskManager {
         "Only the listed context files are copied into the task workspace; dependencies are not resolved automatically.",
       );
     }
+    if (!input.read_only && worktreeRequired) {
+      if (writePaths.length === 0) {
+        warnings.push(
+          "No write_paths were supplied; the worker may edit any file in the isolated worktree.",
+        );
+      } else {
+        warnings.push(
+          "write_paths is enforced by OpenCode edit permissions and a post-run diff check; a violation fails the task and preserves the worktree.",
+        );
+      }
+      if (readPaths.length > 0) {
+        warnings.push(
+          "read_paths is reported for review; reads outside it may still be possible for dependencies.",
+        );
+      }
+    }
     if (config.security.model_gateway === "off") {
       warnings.push(
         "Model gateway is disabled; OpenCode can read provider credentials and reach the provider network directly.",
@@ -278,7 +431,13 @@ export class TaskManager {
 
     const unverified = [
       "Provider model availability and quota are checked only when the task starts.",
-      "Per-file delegation scope is not enforced; the worker can read anywhere its OS sandbox and tool permissions allow.",
+      ...(writePaths.length > 0
+        ? [
+            "write_paths is checked against the final diff; writes are not prevented mid-turn by the bridge.",
+          ]
+        : [
+            "Per-file delegation scope is not enforced; the worker can read anywhere its OS sandbox and tool permissions allow.",
+          ]),
       "The bridge does not run tests or independently verify worker claims.",
       "Cost enforcement requires provider-reported cost.",
       ...capabilities.limitations,
@@ -308,15 +467,21 @@ export class TaskManager {
         read_only: input.read_only,
       },
       workspace: {
-        kind: contextEnabled
-          ? "context_snapshot"
-          : worktreeRequired
-            ? "isolated_worktree"
-            : "repo_root",
+        kind: managedWorkspace !== null
+          ? "managed_workspace"
+          : contextEnabled
+            ? "context_snapshot"
+            : worktreeRequired
+              ? "isolated_worktree"
+              : "repo_root",
         repo_root: repo.repo_root,
         git_top_level: gitTopLevel,
         base_commit: baseCommit,
-        path: contextEnabled || worktreeRequired ? null : repo.repo_root,
+        path: managedWorkspace !== null
+          ? managedWorkspace.workspace_path
+          : contextEnabled || worktreeRequired
+            ? null
+            : repo.repo_root,
         planned_worktree_root: worktreeRequired
           ? join(resolveDataDir(config), "worktrees")
           : null,
@@ -350,17 +515,33 @@ export class TaskManager {
         subagent: false,
         question: false,
       },
+      path_policy: {
+        per_file_scope: writePaths.length > 0,
+        read_paths: readPaths,
+        write_paths: writePaths,
+        enforced_by:
+          writePaths.length > 0
+            ? "opencode_permissions_and_diff_check"
+            : "whole_worktree",
+        protected_paths: [...DEFAULT_PROTECTED_PATHS],
+      },
       isolation: capabilities.execution,
       budgets: {
         max_tokens: config.models.max_tokens,
         max_cost_usd: config.models.max_cost_usd,
         enforcement: "soft",
-        hard_limits: ["queue_size", "concurrency", "task_timeout"],
+        hard_limits: [
+          "queue_size",
+          "concurrency",
+          ...(config.scheduler.default_timeout_seconds > 0 ? ["task_timeout"] : []),
+        ],
         soft_limits: ["tokens", "cost"],
       },
       timeout_seconds: {
         default: config.scheduler.default_timeout_seconds,
         max: config.scheduler.max_timeout_seconds,
+        automatic_timeout: config.scheduler.default_timeout_seconds > 0,
+        zero_means: "no_automatic_timeout",
       },
       context: {
         enabled: contextEnabled,
@@ -400,26 +581,90 @@ export class TaskManager {
           ? `${actualProvider}/${actualModelId}`
           : null;
 
-    const diff = await this.diff(task.id, {
-      ...(options.max_chars === undefined ? {} : { maxChars: options.max_chars }),
-    });
+    const dataDir = resolveDataDir(this.options.config);
+    const snapshot = await readDeliverySnapshot(dataDir, task.id);
+    let diff: TaskDiffResult;
+    let source: "snapshot" | "live" | "unavailable";
+    let capturedAt: string | null = null;
+    if (snapshot !== null) {
+      diff = { task_id: task.id, ...snapshot.diff };
+      source = "snapshot";
+      capturedAt = snapshot.captured_at;
+    } else {
+      try {
+        diff = await this.diff(task.id, { maxChars: SNAPSHOT_MAX_PATCH_CHARS });
+        source = diff.available ? "live" : "unavailable";
+      } catch {
+        diff = unavailableTaskDiff(task, "workspace_removed");
+        source = "unavailable";
+      }
+    }
+
     const simulated = this.options.adapter.name === "mock";
-    const patch = diff.available ? diff.patch : "";
-    const patchHash =
-      patch === "" ? null : createHash("sha256").update(patch).digest("hex");
+    const includePatch = options.include_patch !== false;
+    const displayed = includePatch
+      ? truncatePatch(diff.patch, options.max_chars ?? 40_000)
+      : { patch: "", truncated: false };
+    const displayPatch = diff.available ? displayed.patch : "";
+    const displayPatchHash =
+      displayPatch === ""
+        ? null
+        : createHash("sha256").update(displayPatch).digest("hex");
+    const truncationReason = combineTruncation(
+      diff.available && includePatch ? displayed.truncated : false,
+      diff.available ? diff.truncation_reason : null,
+    );
+    const usage = snapshot?.usage ?? task.usage;
+    const sessionUsage = snapshot?.session_usage ?? latestSessionUsage(events);
+    const executionCompleted =
+      events.some((event) => event.event_type === "opencode.execution.succeeded") ||
+      finalAssistantText(events) !== null ||
+      task.status === "completed";
+    const artifactAvailable =
+      executionCompleted ||
+      (diff.available && (diff.files.length > 0 || diff.patch !== ""));
+    const budgetExceeded =
+      (this.options.config.models.max_tokens !== null &&
+        usage.total_tokens > this.options.config.models.max_tokens) ||
+      (this.options.config.models.max_cost_usd !== null &&
+        usage.cost_known &&
+        usage.cost_usd !== null &&
+        usage.cost_usd > this.options.config.models.max_cost_usd);
 
     const commands = extractDeliveryCommands(events, simulated);
-    const context = await readContextManifest(task, resolveDataDir(this.options.config));
+    const context = await readContextManifest(task, dataDir);
+    const policySnapshot = events
+      .filter((event) => event.payload.policy !== undefined)
+      .at(-1)?.payload.policy;
+    const scopeViolationPayload = events
+      .filter((event) => event.event_type === "task.scope_violation")
+      .at(-1)?.payload;
+    const scopeViolations =
+      Array.isArray(scopeViolationPayload?.violations)
+        ? scopeViolationPayload.violations.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
     const findings = parseReviewFindings(finalAssistantText(events));
     const verificationStatus = simulated
       ? "simulated"
-      : task.status === "completed"
+      : task.status === "completed" || executionCompleted
         ? "unverified"
         : "failed";
     const notes = [
       "The bridge did not execute tests or commands.",
       "Commands below are observed or worker-reported and are not independently verified.",
       "The patch was not applied by the bridge.",
+      ...(budgetExceeded
+        ? [
+            "The task exceeded the local soft token/cost budget; artifacts produced before the limit are preserved but not verified.",
+          ]
+        : []),
+      ...(scopeViolations.length > 0
+        ? [
+            "The worker changed files outside the declared write_paths; the worktree is preserved for review.",
+          ]
+        : []),
       ...(simulated ? ["Mock adapter output is simulated."] : []),
     ];
 
@@ -448,9 +693,13 @@ export class TaskManager {
       },
       git: {
         available: diff.available,
-        ...(diff.available ? {} : { reason: diff.reason ?? "no_worktree" }),
-        base_commit: task.base_commit,
-        worktree_path: task.worktree_path,
+        ...(diff.available
+          ? {}
+          : { reason: diff.reason ?? "no_worktree" }),
+        source,
+        captured_at: capturedAt,
+        base_commit: diff.base_commit ?? task.base_commit,
+        worktree_path: diff.worktree_path ?? task.worktree_path,
         status: diff.available ? diff.git_status : "",
         files: diff.files,
         added: diff.added,
@@ -459,9 +708,16 @@ export class TaskManager {
         untracked: diff.untracked,
         additions: diff.additions,
         deletions: diff.deletions,
-        patch,
-        patch_truncated: diff.available ? diff.patch_truncated : false,
-        patch_sha256: patchHash,
+        patch: displayPatch,
+        patch_included: includePatch && diff.available,
+        patch_truncated: truncationReason !== null,
+        patch_sha256: diff.available ? diff.full_patch_sha256 : null,
+        patch_bytes: diff.available ? diff.full_patch_bytes : 0,
+        display_patch_sha256: displayPatchHash,
+        complete_file_count: diff.complete_file_count,
+        returned_file_count: diff.returned_file_count,
+        omitted_files: diff.omitted_files,
+        truncation_reason: truncationReason,
       },
       commands,
       verification: {
@@ -471,17 +727,45 @@ export class TaskManager {
         notes,
       },
       findings,
-      usage: { ...task.usage },
+      policy_snapshot:
+        typeof policySnapshot === "object" && policySnapshot !== null
+          ? (policySnapshot as Record<string, unknown>)
+          : null,
+      path_policy: {
+        per_file_scope: task.write_paths.length > 0,
+        read_paths: [...task.read_paths],
+        write_paths: [...task.write_paths],
+        scope_violations: scopeViolations,
+      },
+      budget: {
+        scope: "turn",
+        enforcement: "soft",
+        max_tokens: this.options.config.models.max_tokens,
+        max_cost_usd: this.options.config.models.max_cost_usd,
+        exceeded: budgetExceeded,
+      },
+      artifacts: {
+        execution_completed: executionCompleted,
+        artifact_available: artifactAvailable,
+        worktree_available: diff.available,
+        session_usage_recorded: sessionUsage !== null,
+      },
+      usage: { ...usage },
+      session_usage: sessionUsage === null ? null : { ...sessionUsage },
+      usage_scope: "turn",
+      session_usage_scope: "session",
       cost: {
-        usd: task.usage.cost_usd,
-        known: task.usage.cost_known,
+        usd: usage.cost_usd,
+        known: usage.cost_known,
       },
       unverified: [
         "Tests and command results were not executed by the bridge.",
         "Provider model availability and quota were not re-checked.",
         "Patch application and downstream integration were not verified.",
-        "Per-file delegation scope was not enforced.",
-        ...(task.usage.cost_known ? [] : ["Provider cost was not reported."]),
+        ...(task.write_paths.length === 0
+          ? ["Per-file delegation scope was not enforced."]
+          : ["write_paths was checked against the final diff, not enforced mid-turn."]),
+        ...(usage.cost_known ? [] : ["Provider cost was not reported."]),
       ],
     };
   }
@@ -586,28 +870,44 @@ export class TaskManager {
     const timeoutSeconds = input.timeout_seconds;
     if (
       !Number.isInteger(timeoutSeconds) ||
-      timeoutSeconds < 1 ||
+      timeoutSeconds < 0 ||
       timeoutSeconds > this.options.config.scheduler.max_timeout_seconds
     ) {
       throw new BridgeError(
         "INVALID_ARGUMENT",
-        `timeout_seconds must be between 1 and ${this.options.config.scheduler.max_timeout_seconds}`,
+        `timeout_seconds must be between 0 and ${this.options.config.scheduler.max_timeout_seconds}; 0 disables the automatic execution timeout`,
         { details: { timeout_seconds: timeoutSeconds } },
       );
     }
 
     const idempotencyKey = input.idempotency_key?.trim() || null;
     const contextFiles = normalizeContextPaths(input.context_files ?? []);
+    const readPaths = normalizeRepoPaths(input.read_paths ?? [], "read_paths");
+    const writePaths = normalizeRepoPaths(input.write_paths ?? [], "write_paths");
     if (!input.read_only && contextFiles.length > 0) {
       throw new BridgeError(
         "INVALID_ARGUMENT",
         "context_files is only supported for read-only tasks; writable tasks use an isolated worktree",
       );
     }
+    if (input.read_only && writePaths.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "write_paths is only supported for writable tasks",
+      );
+    }
+    if (input.workspace_from_task_id !== undefined && contextFiles.length > 0) {
+      throw new BridgeError(
+        "INVALID_ARGUMENT",
+        "workspace_from_task_id cannot be combined with context_files",
+      );
+    }
     const fingerprint = this.fingerprint({
       ...input,
       task: taskText,
       context_files: contextFiles,
+      read_paths: readPaths,
+      write_paths: writePaths,
     });
     if (idempotencyKey !== null) {
       const existingId = this.idempotency.get(idempotencyKey);
@@ -632,13 +932,23 @@ export class TaskManager {
         { details: { adapter: this.options.adapter.name } },
       );
     }
-    const repo = await this.options.pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
+    const managedWorkspace =
+      input.workspace_from_task_id === undefined
+        ? null
+        : await this.resolveManagedWorkspace(
+            input.workspace_from_task_id,
+            input.repo_root,
+            input.read_only,
+          );
+    const repo = managedWorkspace ?? await this.options.pathPolicy.resolveRepoRoot(input.repo_root, input.read_only);
     if (contextFiles.length > 0) {
       await inspectContextFiles(repo.repo_root, contextFiles);
     }
-    const baseCommit = input.read_only
-      ? (await this.options.pathPolicy.inspectGit(repo.repo_root)).head
-      : repo.base_commit;
+    const baseCommit = managedWorkspace !== null
+      ? managedWorkspace.base_commit
+      : input.read_only
+        ? (await this.options.pathPolicy.inspectGit(repo.repo_root)).head
+        : repo.base_commit;
 
     if (this.queue.size >= this.options.config.scheduler.max_queue) {
       throw new BridgeError("QUEUE_FULL", "The task queue is full", {
@@ -673,7 +983,10 @@ export class TaskManager {
       worktree_git_dir: null,
       base_commit: baseCommit,
       context_path: null,
+      workspace_path: managedWorkspace?.workspace_path ?? null,
       context_files: contextFiles,
+      read_paths: readPaths,
+      write_paths: writePaths,
       created_at: createdAt,
       started_at: null,
       ended_at: null,
@@ -703,6 +1016,9 @@ export class TaskManager {
         timeout_seconds: task.timeout_seconds,
         idempotency_key: idempotencyKey,
         context_files: contextFiles,
+        read_paths: readPaths,
+        write_paths: writePaths,
+        policy: this.policySnapshot(),
       },
       { maxPayloadChars: this.options.config.history.max_delegation_chars },
     );
@@ -808,7 +1124,10 @@ export class TaskManager {
       worktree_git_dir: parent.worktree_git_dir,
       base_commit: parent.base_commit,
       context_path: parent.context_path,
+      workspace_path: parent.workspace_path,
       context_files: combinedContext,
+      read_paths: parent.read_paths,
+      write_paths: parent.write_paths,
       created_at: createdAt,
       started_at: null,
       ended_at: null,
@@ -833,6 +1152,7 @@ export class TaskManager {
         session_id: parent.session_id,
         message: text,
         context_files: additions,
+        policy: this.policySnapshot(),
       },
       { maxPayloadChars: this.options.config.history.max_delegation_chars },
     );
@@ -884,12 +1204,17 @@ export class TaskManager {
     options: { file?: string; maxChars?: number } = {},
   ): Promise<TaskDiffResult> {
     const task = this.requireTask(taskId);
-    if (task.worktree_path === null || task.base_commit === null) {
+    const worktreePath =
+      task.worktree_path ??
+      (task.workspace_path !== null && task.base_commit !== null
+        ? task.workspace_path
+        : null);
+    if (worktreePath === null || task.base_commit === null) {
       return {
         task_id: task.id,
         reason: "no_worktree",
         available: false,
-        worktree_path: task.worktree_path,
+        worktree_path: worktreePath,
         base_commit: task.base_commit,
         git_status: "",
         files: [],
@@ -901,13 +1226,19 @@ export class TaskManager {
         deletions: 0,
         patch: "",
         patch_truncated: false,
+        full_patch_sha256: null,
+        full_patch_bytes: 0,
+        complete_file_count: 0,
+        returned_file_count: 0,
+        omitted_files: [],
+        truncation_reason: null,
       };
     }
     if (this.options.diffs === undefined) {
       throw new BridgeError("WORKTREE_CREATE_FAILED", "Diff manager is not configured");
     }
     const result = await this.options.diffs.getDiff({
-      worktreePath: task.worktree_path,
+      worktreePath,
       baseCommit: task.base_commit,
       ...(options.file === undefined ? {} : { file: options.file }),
       ...(options.maxChars === undefined ? {} : { maxChars: options.maxChars }),
@@ -1246,6 +1577,7 @@ export class TaskManager {
       session: null,
       stopReason: null,
       abortConfirmed: null,
+      executionSucceeded: false,
     };
     this.running.set(task.id, handle);
     task.started_at = this.now().toISOString();
@@ -1256,14 +1588,31 @@ export class TaskManager {
       timeout_seconds: task.timeout_seconds,
     });
 
-    const timer = setTimeout(() => {
-      void this.requestStop(task, handle, "timeout").catch((error: unknown) => {
-        this.options.logger.error(
-          { task_id: task.id, error: toErrorPayload(error) },
-          "timeout stop request failed",
+    // timeout_seconds === 0 means caller-controlled lifetime. Only an explicit
+    // positive deadline creates an automatic stop; agent_abort always works.
+    // Node timers cap at 2^31-1 ms, so long deadlines are rescheduled in chunks.
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    if (task.timeout_seconds > 0) {
+      const deadline = Date.now() + task.timeout_seconds * 1000;
+      const scheduleTimeout = (): void => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          timeoutTimer = null;
+          void this.requestStop(task, handle, "timeout").catch((error: unknown) => {
+            this.options.logger.error(
+              { task_id: task.id, error: toErrorPayload(error) },
+              "timeout stop request failed",
+            );
+          });
+          return;
+        }
+        timeoutTimer = setTimeout(
+          scheduleTimeout,
+          Math.min(remaining, MAX_TIMER_DELAY_MS),
         );
-      });
-    }, task.timeout_seconds * 1000);
+      };
+      scheduleTimeout();
+    }
 
     const context = {
       signal: handle.controller.signal,
@@ -1299,11 +1648,60 @@ export class TaskManager {
         { maxPayloadChars: this.options.config.history.max_delegation_chars },
       );
       const result = await this.options.adapter.start(task, prompt, context);
+      if (timeoutTimer !== null) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      const usage = result.usage ?? task.usage;
+      const sessionUsage =
+        result.session_usage ??
+        latestSessionUsage(this.options.eventStore.list(task.id, { limit: 10_000 }).events);
+      if (handle.stopReason === null && result.stopped !== true) {
+        try {
+          const violations = await this.scopeViolation(task);
+          if (violations !== null) {
+            this.append(task, "bridge", "task.scope_violation", {
+              violations,
+              write_paths: task.write_paths,
+              read_paths: task.read_paths,
+            });
+            await this.captureDeliverySnapshot(task, usage, sessionUsage);
+            this.finalize(task, "failed", {
+              summary: result.summary,
+              usage,
+              error: {
+                code: "SCOPE_VIOLATION",
+                message: `Worker changed paths outside write_paths: ${violations.join(", ")}`,
+              },
+            });
+            return;
+          }
+        } catch (error) {
+          await this.captureDeliverySnapshot(task, usage, sessionUsage);
+          const payload = toErrorPayload(error);
+          this.finalize(task, "failed", {
+            summary: result.summary,
+            usage,
+            error: { code: "SCOPE_VIOLATION", message: payload.message },
+          });
+          return;
+        }
+      }
+      await this.captureDeliverySnapshot(task, usage, sessionUsage);
       this.finishRun(task, handle, result);
     } catch (error) {
+      if (timeoutTimer !== null) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      await this.captureDeliverySnapshot(
+        task,
+        task.usage,
+        latestSessionUsage(this.options.eventStore.list(task.id, { limit: 10_000 }).events),
+      );
       this.finishRunWithError(task, handle, error);
     } finally {
-      clearTimeout(timer);
+      if (timeoutTimer !== null) clearTimeout(timeoutTimer);
       if (this.running.get(task.id) === handle) this.running.delete(task.id);
       this.pump();
     }
@@ -1432,10 +1830,108 @@ export class TaskManager {
     }
   }
 
+  private async scopeViolation(task: TaskRecord): Promise<string[] | null> {
+    if (
+      task.read_only ||
+      task.write_paths.length === 0 ||
+      task.worktree_path === null ||
+      task.base_commit === null ||
+      this.options.diffs === undefined
+    ) {
+      return null;
+    }
+    const diff = await this.options.diffs.getDiff({
+      worktreePath: task.worktree_path,
+      baseCommit: task.base_commit,
+      maxChars: 1,
+    });
+    if (!diff.available) {
+      throw new BridgeError(
+        "SCOPE_VIOLATION",
+        "Cannot verify write_paths because the task worktree is unavailable",
+        { details: { task_id: task.id, worktree_path: task.worktree_path } },
+      );
+    }
+    const changed = [
+      ...new Set([
+        ...diff.added,
+        ...diff.modified,
+        ...diff.deleted,
+        ...diff.untracked,
+      ]),
+    ];
+    const contract: PathContract = {
+      read_paths: task.read_paths,
+      write_paths: task.write_paths,
+      per_file_scope: true,
+    };
+    const violations = scopeViolations(changed, contract);
+    return violations.length === 0 ? null : violations;
+  }
+
+  private async captureDeliverySnapshot(
+    task: TaskRecord,
+    usage: TaskUsage,
+    sessionUsage: TaskUsage | null,
+  ): Promise<void> {
+    const worktreePath = task.worktree_path ?? task.workspace_path;
+    if (
+      worktreePath === null ||
+      task.base_commit === null ||
+      this.options.diffs === undefined
+    ) {
+      return;
+    }
+    try {
+      const diff = await this.options.diffs.getDiff({
+        worktreePath,
+        baseCommit: task.base_commit,
+        maxChars: SNAPSHOT_MAX_PATCH_CHARS,
+      });
+      if (!diff.available) return;
+      const snapshot: DeliverySnapshot = {
+        version: 1,
+        task_id: task.id,
+        captured_at: this.now().toISOString(),
+        diff,
+        usage: { ...usage },
+        session_usage: sessionUsage === null ? null : { ...sessionUsage },
+      };
+      const written = await writeDeliverySnapshot(
+        resolveDataDir(this.options.config),
+        snapshot,
+      );
+      if (written) {
+        this.append(task, "bridge", "delivery.snapshot.created", {
+          worktree_path: worktreePath,
+          base_commit: task.base_commit,
+          patch_sha256: diff.full_patch_sha256,
+          patch_bytes: diff.full_patch_bytes,
+          files: diff.complete_file_count,
+          omitted_files: diff.omitted_files,
+        });
+      }
+    } catch (error) {
+      this.options.logger.warn(
+        { task_id: task.id, error: toErrorPayload(error) },
+        "delivery snapshot capture failed",
+      );
+    }
+  }
+
   private finishRun(task: TaskRecord, handle: RunHandle, result: AdapterRunResult): void {
     const usage = result.usage ?? task.usage;
 
     if (handle.stopReason === "budget" || this.budgetExceeded(usage)) {
+      if (handle.stopReason !== "budget") {
+        this.append(task, "system", "task.budget_exceeded", {
+          usage,
+          max_tokens: this.options.config.models.max_tokens,
+          max_cost_usd: this.options.config.models.max_cost_usd,
+          enforcement: "soft",
+          execution_completed: handle.executionSucceeded,
+        });
+      }
       this.finalize(task, "failed", {
         summary: result.summary,
         usage,
@@ -1564,6 +2060,7 @@ export class TaskManager {
     task.error_code = options.error?.code ?? null;
     task.error_message = options.error?.message ?? null;
     task.stop_reason = null;
+    this.budgetThresholds.delete(task.id);
     this.store?.saveUsage(task);
     this.store?.saveTask(task);
 
@@ -1668,21 +2165,41 @@ export class TaskManager {
         : undefined,
     );
 
+    const handle = this.running.get(task.id);
+    if (handle !== undefined) {
+      const finish =
+        typeof event.payload.finish === "string"
+          ? event.payload.finish
+          : typeof event.payload.rawFinish === "string"
+            ? event.payload.rawFinish
+            : null;
+      if (
+        event.event_type === "opencode.execution.succeeded" ||
+        event.event_type === "session.idle" ||
+        (event.event_type === "opencode.step.ended" && finish === "stop")
+      ) {
+        handle.executionSucceeded = true;
+      }
+    }
+
     if (event.event_type === "usage.updated") {
       const usage = parseUsage(event.payload.usage);
       if (usage !== null) {
         task.usage = usage;
         this.store?.saveUsage(task);
-        if (this.budgetExceeded(usage)) {
-          const handle = this.running.get(task.id);
-          if (handle !== undefined && handle.stopReason === null) {
-            void this.requestStop(task, handle, "budget").catch((error: unknown) => {
-              this.options.logger.error(
-                { task_id: task.id, error: toErrorPayload(error) },
-                "budget stop request failed",
-              );
-            });
-          }
+        this.checkBudgetThresholds(task, usage);
+        if (
+          this.budgetExceeded(usage) &&
+          handle !== undefined &&
+          handle.stopReason === null &&
+          !handle.executionSucceeded
+        ) {
+          void this.requestStop(task, handle, "budget").catch((error: unknown) => {
+            this.options.logger.error(
+              { task_id: task.id, error: toErrorPayload(error) },
+              "budget stop request failed",
+            );
+          });
         }
       }
     }
@@ -1761,6 +2278,9 @@ export class TaskManager {
       session_id: task.session_id,
       worktree_path: task.worktree_path,
       context_path: task.context_path,
+      workspace_path: task.workspace_path,
+      read_paths: [...task.read_paths],
+      write_paths: [...task.write_paths],
       created_at: task.created_at,
       started_at: task.started_at,
       ended_at: task.ended_at,
@@ -1933,6 +2453,37 @@ export class TaskManager {
     return false;
   }
 
+  private checkBudgetThresholds(task: TaskRecord, usage: TaskUsage): void {
+    const maxTokens = this.options.config.models.max_tokens;
+    const maxCost = this.options.config.models.max_cost_usd;
+    const tokenRatio =
+      maxTokens === null || maxTokens <= 0 ? null : usage.total_tokens / maxTokens;
+    const costRatio =
+      maxCost === null || maxCost <= 0 || !usage.cost_known || usage.cost_usd === null
+        ? null
+        : usage.cost_usd / maxCost;
+    const ratio = Math.max(tokenRatio ?? 0, costRatio ?? 0);
+    const threshold = ratio >= 0.9 ? 90 : ratio >= 0.7 ? 70 : null;
+    if (threshold === null) return;
+    const previous = this.budgetThresholds.get(task.id) ?? 0;
+    if (threshold <= previous) return;
+    this.budgetThresholds.set(task.id, threshold);
+    this.append(task, "system", "task.budget.threshold", {
+      threshold_percent: threshold,
+      consumed_tokens: usage.total_tokens,
+      max_tokens: maxTokens,
+      remaining_tokens:
+        maxTokens === null ? null : Math.max(0, maxTokens - usage.total_tokens),
+      consumed_cost_usd: usage.cost_usd,
+      max_cost_usd: maxCost,
+      remaining_cost_usd:
+        maxCost === null || usage.cost_usd === null
+          ? null
+          : Math.max(0, maxCost - usage.cost_usd),
+      enforcement: "soft",
+    });
+  }
+
   private hasActiveLineage(rootTaskId: string): boolean {
     for (const task of this.tasks.values()) {
       if (task.root_task_id === rootTaskId && !isTerminal(task.status)) return true;
@@ -1951,10 +2502,81 @@ export class TaskManager {
           read_only: input.read_only,
           timeout_seconds: input.timeout_seconds,
           context_files: input.context_files ?? [],
+          read_paths: input.read_paths ?? [],
+          write_paths: input.write_paths ?? [],
+          workspace_from_task_id: input.workspace_from_task_id ?? null,
         }),
       )
       .digest("hex");
   }
+}
+
+function isWithinPath(root: string, candidate: string): boolean {
+  const normalizedRoot = resolve(root);
+  const normalizedCandidate = resolve(candidate);
+  return (
+    normalizedCandidate === normalizedRoot ||
+    normalizedCandidate.startsWith(`${normalizedRoot}${sep}`)
+  );
+}
+
+function truncatePatch(
+  patch: string,
+  maxChars: number,
+): { patch: string; truncated: boolean } {
+  if (patch.length <= maxChars) return { patch, truncated: false };
+  return {
+    patch: `${patch.slice(0, maxChars)}\n...[diff truncated at ${maxChars} characters]`,
+    truncated: true,
+  };
+}
+
+function combineTruncation(
+  displayTruncated: boolean,
+  source: "max_chars" | "untracked_limit" | "both" | null,
+): "max_chars" | "untracked_limit" | "both" | null {
+  if (displayTruncated && source !== null && source !== "max_chars") return "both";
+  if (displayTruncated) return "max_chars";
+  return source;
+}
+
+function unavailableTaskDiff(
+  task: TaskRecord,
+  reason: "no_worktree" | "workspace_removed",
+): TaskDiffResult {
+  return {
+    task_id: task.id,
+    reason,
+    available: false,
+    worktree_path: task.worktree_path ?? task.workspace_path,
+    base_commit: task.base_commit,
+    git_status: "",
+    files: [],
+    added: [],
+    modified: [],
+    deleted: [],
+    untracked: [],
+    additions: 0,
+    deletions: 0,
+    patch: "",
+    patch_truncated: false,
+    full_patch_sha256: null,
+    full_patch_bytes: 0,
+    complete_file_count: 0,
+    returned_file_count: 0,
+    omitted_files: [],
+    truncation_reason: null,
+  };
+}
+
+function latestSessionUsage(events: BridgeEvent[]): TaskUsage | null {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event === undefined || event.event_type !== "usage.updated") continue;
+    const usage = parseUsage(event.payload.session_usage);
+    if (usage !== null) return usage;
+  }
+  return null;
 }
 
 function parseUsage(value: unknown): TaskUsage | null {

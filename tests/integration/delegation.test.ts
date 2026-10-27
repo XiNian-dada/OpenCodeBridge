@@ -19,6 +19,11 @@ describe("delegation discovery and waiting", () => {
         { model: "opencode-go/*", permitted: true, error_code: null },
       ]);
       expect(capabilities.models.availability).toBe("validated_at_task_start");
+      expect(capabilities.build).toMatchObject({
+        version: "0.1.0",
+        config_path: h.configPath,
+      });
+      expect(capabilities.build.config_revision).toMatch(/^[0-9a-f]{16}$/);
       expect(capabilities.budgets).toMatchObject({ max_tokens: 1000, enforcement: "soft" });
       expect(capabilities.execution.write_isolation).toBe("simulated");
       expect(h.services.manager.list({ limit: 10 })).toEqual([]);
@@ -89,7 +94,35 @@ describe("delegation discovery and waiting", () => {
       });
       expect(delivery.verification.status).toBe("simulated");
       expect(delivery.verification.tests_run_by_bridge).toBe(false);
+      expect(delivery.policy_snapshot).toMatchObject({
+        config_revision: h.config.config_revision,
+        max_tokens: null,
+      });
       expect(delivery.unverified.length).toBeGreaterThan(0);
+    } finally { await h.cleanup(); }
+  });
+
+  it("reports caller-controlled duration when no default timeout is configured", async () => {
+    const h = await createHarness({ defaultTimeoutSeconds: 0 });
+    try {
+      const result = await h.services.service.preflight({
+        repo_root: h.repoRoot,
+        read_only: true,
+      });
+      expect(result.timeout_seconds).toEqual({
+        default: 0,
+        max: 60,
+        automatic_timeout: false,
+        zero_means: "no_automatic_timeout",
+      });
+      expect(result.budgets.hard_limits).not.toContain("task_timeout");
+
+      const { task } = await h.services.service.spawn({
+        ...spawnInput(h.repoRoot),
+        timeout_seconds: 0,
+      });
+      expect(task.timeout_seconds).toBe(0);
+      await h.services.manager.waitForTerminal(task.task_id, 5000);
     } finally { await h.cleanup(); }
   });
 

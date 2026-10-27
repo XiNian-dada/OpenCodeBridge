@@ -48,8 +48,10 @@ describe("daemon IPC", () => {
       const spawned = await client.spawn({
         ...spawnInput(harness.repoRoot),
         read_only: true,
+        timeout_seconds: 0,
       });
       expect(spawned.task.status).toMatch(/queued|preparing|running/);
+      expect(spawned.task.timeout_seconds).toBe(0);
 
       const waited = await client.wait({ task_ids: [spawned.task.task_id], timeout_seconds: 3 });
       expect(waited.ready_task_ids).toEqual([spawned.task.task_id]);

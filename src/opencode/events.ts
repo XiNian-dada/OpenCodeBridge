@@ -25,6 +25,11 @@ const stepEvents = new Set([
   "session.retried",
   "session.compaction.started",
   "session.compaction.ended",
+  "session.execution.started",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.inbox.enqueued",
+  "session.inbox.delivered",
 ]);
 
 // OpenCode 2.1.2 emits session.tool/step/text.*; retain older session.next.* support.

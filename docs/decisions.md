@@ -256,6 +256,56 @@ Status: accepted for Phase 1
   `security.model_gateway` defaults to `require`; `auto` falls back to direct
   access for unsupported providers and `off` disables the gateway.
 
+## Caller-controlled task duration (2026-10-25)
+
+- Task execution no longer has a default automatic timeout. A missing
+  `scheduler.default_timeout_seconds` now resolves to `0`, meaning the task runs
+  until the caller stops it. `agent_abort` is the supported stop channel and
+  still verifies that the adapter reached a terminal state.
+- A positive `timeout_seconds` on `agent_spawn` remains available as an explicit
+  hard deadline. `scheduler.default_timeout_seconds` can set a longer default
+  deadline for new tasks, and `scheduler.max_timeout_seconds` defaults to
+  604800 seconds (7 days), with a configuration maximum of one year.
+- `agent_wait` and `agent_events` timeouts only end those calls; they never
+  request cancellation. This keeps stopping under caller control instead of
+  conflating observation timeouts with task lifetime.
+- Trade-off: a stuck or forgotten task occupies a daemon concurrency slot until
+  `agent_abort`, daemon shutdown, or adapter process exit. The capability and
+  preflight responses disclose whether a default deadline is active.
+
+## Turn correctness, delivery snapshots, and scoped writes (2026-10-27)
+
+- OpenCode completion is now turn-scoped. Before prompting, the adapter records
+  the existing message IDs, count, cumulative usage, and outcome. A turn only
+  completes after a new assistant message appears after the prompt; stale
+  `session.idle`, previous assistant replies, and pre-prompt poll results are
+  ignored. Polling starts after prompt admission, and only current-turn messages
+  are emitted to history.
+- Turn usage is the delta from the session baseline. `usage.updated` carries both
+  turn and cumulative session usage; delivery exposes both scopes explicitly.
+  `session.usage.updated` events are normalized while the task runs instead of
+  waiting for final readback. Budget thresholds at 70%/90% are recorded, and a
+  final `finish: "stop"` step suppresses a pointless post-completion abort.
+- Delivery now freezes an immutable snapshot after the worker stops. The snapshot
+  contains the full patch, stable SHA-256, byte count, file counts, omitted
+  files, turn/session usage, and capture time. `agent_delivery` reads the
+  snapshot even after cleanup or coordinator edits; legacy tasks fall back to a
+  live diff. A removed worktree reports `workspace_removed` rather than a
+  worktree-creation error. `include_patch: false` returns metadata only.
+- Writable tasks may declare `write_paths` (files or directories ending in `/`).
+  OpenCode receives scoped edit/write/patch rules, and the bridge checks the
+  final diff, failing with `SCOPE_VIOLATION` and preserving the worktree on a
+  violation. `read_paths` is declared review scope, not a read sandbox.
+- `workspace_from_task_id` lets a new read-only session reuse a completed
+  Bridge-owned worktree/snapshot after validating the source task, repository,
+  and managed path. Writable continuation remains `agent_message`.
+- `agent_result` returns the current turn's reply and metadata without patch
+  text. Diff outputs now include `full_patch_sha256`, full byte counts,
+  `omitted_files`, and a truncation reason; untracked line counts follow `wc -l`.
+- Capabilities include build SHA/dirty/built_at and the effective config path and
+  revision; `task.created`/`task.resumed` record a policy snapshot for historical
+  explanation.
+
 ## Automatic local conversation display
 
 - The daemon now serves a read-only local viewer. Successful task creation and

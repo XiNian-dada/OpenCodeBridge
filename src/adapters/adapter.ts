@@ -29,7 +29,10 @@ export interface AdapterContext {
 
 export interface AdapterRunResult {
   summary: string;
+  /** Usage produced by this turn, excluding earlier turns in the same session. */
   usage?: TaskUsage;
+  /** Cumulative usage for the whole OpenCode session. */
+  session_usage?: TaskUsage;
   stopped?: boolean;
   tests?: Record<string, unknown>;
 }

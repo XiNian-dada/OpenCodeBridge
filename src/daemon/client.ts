@@ -138,6 +138,9 @@ export class IpcTaskClient implements TaskService {
     return this.request("delivery", {
       task_id: options.task_id,
       ...(options.max_chars === undefined ? {} : { max_chars: options.max_chars }),
+      ...(options.include_patch === undefined
+        ? {}
+        : { include_patch: options.include_patch }),
     });
   }
 

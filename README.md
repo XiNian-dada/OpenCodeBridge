@@ -13,7 +13,7 @@ keeping task state, prompts, events, and cancellation under bridge control.
 ## What works now
 
 - MCP stdio server (`@modelcontextprotocol/server` v2)
-- Fourteen tools: `agent_viewer`, `agent_capabilities`, `agent_preflight`, `agent_spawn`, `agent_wait`, `agent_events`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_delivery`, `agent_abort`, `agent_list`, `agent_cleanup`
+- Fifteen tools: `agent_viewer`, `agent_capabilities`, `agent_preflight`, `agent_spawn`, `agent_wait`, `agent_events`, `agent_status`, `agent_history`, `agent_message`, `agent_diff`, `agent_result`, `agent_delivery`, `agent_abort`, `agent_list`, `agent_cleanup`
 - Automatic local live viewer for delegated tasks, exact recorded prompts, replies, and tool calls
 - Policy/isolation discovery without a model call, preflight validation, bounded batch waiting, and compact task snapshots
 - Verifiable delivery packages with base commit, patch hash, observed commands, actual model resolution, and explicit verification gaps
@@ -23,6 +23,21 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Minimal hashed context snapshots for read-only tasks, with main-Agent-controlled expansion
 - Provider auth/quota/region pause with a local `bridge resume` channel
 - FIFO queue with configurable concurrency and queue limits
+- Caller-controlled task duration: no automatic execution timeout by default;
+  `agent_abort` stops queued/running tasks, while `agent_wait` and `agent_events`
+  timeouts only end the wait
+- Turn-scoped completion: a follow-up cannot complete from a previous turn's
+  assistant, idle state, or replayed SSE event
+- Turn usage is separated from cumulative session usage; live provider usage
+  events update budget checks and emit 70%/90% threshold events
+- Stable full-patch SHA-256 and complete/omitted file counts, unaffected by
+  `max_chars`
+- Immutable delivery snapshots survive worktree cleanup and later coordinator edits
+- Optional `write_paths` contract for writable tasks, checked by OpenCode
+  permissions and a post-run diff gate
+- Bounded `workspace_from_task_id` reuse of a Bridge-owned worktree for a new
+  read-only session
+- Build SHA/config revision metadata and a compact `agent_result` entry point
 - Explicit task state machine with verified cancellation
 - Idempotency keys
 - Structured, redacted event history with stable per-task sequence numbers
@@ -155,6 +170,12 @@ root with a real absolute path.
 - Models listed in `models.expensive` require `models.allow_expensive: true`.
   The bridge never upgrades models automatically.
 - `scheduler.max_concurrent` defaults to 2; `max_queue` defaults to 10.
+- `scheduler.default_timeout_seconds` defaults to `0`, which means **no automatic
+  execution timeout**. Set a positive value to give new tasks a default hard
+  deadline, and set `timeout_seconds` per task when only some tasks need one.
+  `scheduler.max_timeout_seconds` defaults to 604800 (7 days). The local caller
+  stops a task through `agent_abort`; wait/event timeouts never stop execution.
+  Existing configs that already set `default_timeout_seconds` keep that value.
 - The OpenCode child environment is filtered. Only basic runtime variables and
   provider key prefixes are inherited; unrelated cloud, SSH, Git-host, and CI
   credentials are removed.
@@ -364,10 +385,12 @@ ID exists upstream. Mock capabilities and results are explicitly simulated.
 blocks new delegations until the local `bridge resume` command clears it.
 
 The response also discloses OS read isolation, the local model gateway mode
-(`gateway`, `gateway_configured`, or `partial`), per-file scope enforcement, and
-independent verification of OpenCode's internal model calls. Do not delegate
-writable work if your task requires boundaries the bridge does not enforce. In
-that case Codex should implement the changes directly.
+(`gateway`, `gateway_configured`, or `partial`), per-file scope enforcement,
+independent verification of OpenCode's internal model calls, whether a default
+execution deadline is active, and the running daemon's `build` metadata
+(`version`, `git_sha`, `dirty`, `built_at`, `config_path`, `config_revision`).
+Do not delegate writable work if your task requires boundaries the bridge does
+not enforce. In that case Codex should implement the changes directly.
 
 ### `agent_preflight`
 
@@ -381,10 +404,14 @@ the real Git top level and recorded `HEAD`, checks model policy, and returns:
   created at task start, plus the planned worktree parent
 - effective read/glob/grep/edit/write/patch permissions and denied shell, web,
   external-directory, subagent, and question capabilities
+- `path_policy` with declared `read_paths`/`write_paths`, protected defaults, and
+  whether per-file scope is actually enforced
 - actual OS read/write isolation, model gateway mode, and the
   provider-network/credential exceptions
 - a planned context snapshot with per-file SHA-256 and total bytes when
   `context_files` is supplied
+- `workspace.kind: "managed_workspace"` and its path when
+  `workspace_from_task_id` references a completed Bridge-owned worktree
 - soft budgets, hard limits, default/max timeout, warnings, and an explicit
   `unverified` list
 
@@ -405,11 +432,28 @@ file scope, constraints, acceptance criteria, and a short expected report.
   "task_type": "analysis",
   "model": "provider/model",
   "read_only": true,
-  "timeout_seconds": 120,
   "idempotency_key": "parser-edge-cases",
   "context_files": ["src/parser.ts", "package.json"]
 }
 ```
+
+`timeout_seconds` is optional and no automatic execution timeout is applied by
+default. Set a positive value only when you want a hard deadline; `0` explicitly
+disables it. Large tasks can keep running until you call `agent_abort`, and the
+bridge verifies cancellation instead of silently abandoning the worker.
+
+For writable tasks, pass `write_paths` (repository-relative files, or directories
+ending in `/`). The bridge adds OpenCode edit rules for those paths and fails the
+task with `SCOPE_VIOLATION` if the final diff touches anything else; the worktree
+is preserved for review. Omitting `write_paths` keeps the older whole-worktree
+behavior and preflight says so explicitly. `read_paths` is a declared review
+scope; it does not prevent reads needed for dependencies.
+
+For a new read-only session on a completed Bridge worktree/snapshot, pass
+`workspace_from_task_id` plus the original `repo_root`. The bridge verifies the
+source task, repository, and managed path; it never opens the whole data
+directory or Library. Writable continuation still uses `agent_message` on the
+original lineage.
 
 For the OpenCode adapter, set `read_only: false` only when you want an isolated
 worktree and are on macOS with `sandbox-exec`. Writable tasks are edit-only;
@@ -438,7 +482,8 @@ waiting again, because an already-finished task returns immediately.
 
 Waiting happens inside the daemon and does not call a model or repeatedly send
 status tool results to Codex. Pending waits end on IPC disconnect; the delegated
-tasks continue. Task execution timeouts still come from `agent_spawn`.
+tasks continue. Task execution deadlines are optional and come from
+`agent_spawn`; omitted or `0` means no automatic timeout.
 
 ### `agent_events`
 
@@ -469,12 +514,14 @@ Returns the delegated task text, the exact prompt sent to the adapter, agent
 messages, tool events, shell events, and Bridge/OpenCode server events. Supports
 `limit`, numeric `cursor` for older pages, forward `after` sequence, and
 `event_types`. Use `after` for incremental inspection instead of repeatedly
-fetching old events. The task header omits the original instruction text by
-default (`task_text_omitted: true`); pass `include_task: true` to include it.
-Recorded prompt events remain available. Payloads are redacted and truncated
-according to the configured history limits. Conversation messages
-(`opencode.message`) use `history.max_delegation_chars` rather than the smaller
-audit payload limit, so assistant replies remain readable in the viewer.
+fetching old events. Each turn's history contains only messages emitted for that
+turn; previous assistant replies are not replayed into a follow-up. The task
+header omits the original instruction text by default (`task_text_omitted:
+true`); pass `include_task: true` to include it. Recorded prompt events remain
+available. Payloads are redacted and truncated according to the configured
+history limits. Conversation messages (`opencode.message`) use
+`history.max_delegation_chars` rather than the smaller audit payload limit, so
+assistant replies remain readable in the viewer.
 
 For the real adapter, tool and shell records come from OpenCode SSE events;
 assistant messages are read back from the session API. If the event stream
@@ -492,35 +539,63 @@ returns `TASK_BUSY`.
 
 For a read-only task that used `context_files`, pass `context_files` to add
 files. The bridge creates a new context snapshot for the turn; the worker cannot
-expand its own access.
+expand its own access. A follow-up completes only after a new assistant message
+for the current turn exists; a previous reply or stale idle event is not treated
+as completion. `usage` on the new turn is incremental, while `session_usage` in
+delivery/history reports the cumulative session total.
 
 ### `agent_diff`
 
 Returns the task worktree's Git status, modified/added/deleted/untracked files,
 line counts, and a patch. Use `file` to inspect one path and `max_chars` to limit
-the patch. Worktrees are retained after completion or failure for review.
+the displayed patch. `full_patch_sha256`, `full_patch_bytes`,
+`complete_file_count`, `returned_file_count`, `omitted_files`, and
+`truncation_reason` describe completeness; `max_chars` never changes the full
+hash. Worktrees are retained after completion or failure for review. If a
+worktree was removed, this returns `available: false` with
+`reason: "workspace_removed"`; use `agent_delivery` for the frozen snapshot.
+
+### `agent_result`
+
+A compact, current-turn entry point. Returns the task status, final reply,
+structured findings, model resolution, turn/session usage, budget and artifact
+flags, changed-file list, stable patch SHA-256, observed commands, policy
+snapshot, and verification gaps. It never includes patch text; call
+`agent_delivery` when the full patch is needed. This avoids fetching status,
+history, diff and delivery separately just to read the final answer.
 
 ### `agent_delivery`
 
-Returns a reviewable delivery package instead of a bare "completed" claim. It
-includes the recorded base commit, worktree, changed files, patch, patch SHA-256,
-observed shell/tool commands and any exit codes, the actually resolved model
-when an `opencode.model.resolved` event exists, whether that request went
-through the local model gateway (`model.gateway`), the context snapshot manifest
-when one was used, usage/cost, and a verification status. Review/analysis tasks
-are prompted to end with a fenced JSON findings block; `delivery.findings`
-contains the parsed `location`, `trigger`, `evidence`, and `confidence` values,
-and `verified: false` when the block is missing, malformed, or truncated.
-The bridge does not execute tests or commands; those fields are marked
-`unverified`, `tests_run_by_bridge: false`, and `verified_by_bridge: false`.
-Mock commands are labelled `simulated`. This tool is read-only and does not
-modify the worktree.
+Returns a reviewable delivery package instead of a bare "completed" claim. A
+snapshot is frozen immediately after the worker stops (`git.source:
+"snapshot"`), so later coordinator edits and worktree cleanup do not change the
+recorded base commit, changed files, full patch bytes, or stable
+`patch_sha256`. Legacy tasks without a snapshot use a live diff
+(`git.source: "live"`); a removed worktree returns
+`available: false, reason: "workspace_removed"` instead of a create-worktree
+error. `max_chars` only changes the displayed patch; `patch_sha256` is always
+computed over the full patch. `include_patch: false` returns metadata and hashes
+without patch text.
+The package also includes observed shell/tool commands and exit codes, the
+actually resolved model when an `opencode.model.resolved` event exists,
+the local gateway flag, context manifest, `usage` for this turn,
+`session_usage` for the whole session (with explicit scopes), the policy snapshot
+recorded at task creation, budget/artifact flags, and a verification status.
+Review/analysis tasks are prompted to end with a fenced JSON findings block;
+`delivery.findings` contains the parsed `location`, `trigger`, `evidence`, and
+`confidence` values, and `verified: false` when the block is missing, malformed,
+or truncated. The bridge does not execute tests or commands; those fields are
+marked `unverified`, `tests_run_by_bridge: false`, and
+`verified_by_bridge: false`. Mock commands are labelled `simulated`. This tool is
+read-only and does not modify the worktree.
 
 ### `agent_abort`
 
-Cancels a queued task immediately. For a running task it asks OpenCode to
-interrupt the session, waits for a terminal state, and stops the private server
-process group if needed. Work already produced is preserved by design.
+The caller-controlled stop path. Cancels a queued task immediately. For a
+running task it asks OpenCode to interrupt the session, waits for a terminal
+state, and stops the private server process group if needed. This is the default
+way to end a long-running task because task execution has no automatic timeout
+unless `timeout_seconds` was set. Work already produced is preserved by design.
 
 ### `agent_list`
 
@@ -539,8 +614,10 @@ status fields. `total` is the number returned, not a count of all stored tasks.
 5. agent_wait on the returned task ID(s); use agent_events with an after cursor for
    incremental activity while continuing independent Codex work between waits.
    The Codex in-app viewer shows the task's conversation and tool activity.
-6. agent_history (incremental after sequence), agent_diff, and agent_delivery to review
-   actual activity, changes, patch hash, observed commands, and verification gaps.
+6. agent_result for the current turn's final reply and stable metadata;
+   agent_history (incremental after sequence), agent_diff, and agent_delivery to
+   review actual activity, changes, patch hash, observed commands, and
+   verification gaps.
 7. Run relevant tests yourself and integrate only reviewed changes.
 8. If needed, agent_message continues the session; wait on its NEW turn task ID.
 9. agent_cleanup dry-run to inspect retained resources after integration.
@@ -597,8 +674,9 @@ the same verifiable package as `agent_delivery`.
 `models.max_tokens` and `models.max_cost_usd` are soft budgets. Usage events are
 checked while a task runs; exceeding a limit requests cancellation and records
 `BUDGET_EXCEEDED`. Cost enforcement requires the provider to report a known cost.
-Queue size, concurrency, and task timeouts are hard limits. Preflight reports
-which limits are hard and which are soft.
+Queue size and concurrency are hard limits. Task timeouts are optional hard
+deadlines when configured; `0` disables them. Preflight reports which limits are
+hard and which are soft.
 
 Provider authentication, account/quota, and region errors set a daemon-wide
 pause: new spawns, messages, and preflights fail with `PROVIDER_PAUSED`. The
@@ -683,12 +761,16 @@ whitelist. On Linux, read-only tasks
 rely on OpenCode permissions unless OS read isolation is added. When the gateway
 is off or falls back to direct access, writable tasks use the broader write
 profile and can read more of the host. Writable tasks are edit-only, so OpenCode
-cannot run tests. Worktrees and logs
+cannot run tests. `write_paths` is checked against the final diff, not enforced
+mid-turn; omitting it allows edits anywhere in the isolated worktree.
+`read_paths` is declared scope only. Worktrees and logs
 are retained by default; `agent_cleanup` and the local approval CLI remove safe
 resources, while dirty worktrees require user approval. The main repository's
 Git object store is deliberately not writable from the sandbox. Tasks now survive MCP
 adapter exits through the daemon, but a daemon crash cannot resume an in-flight
 OpenCode turn; those tasks are marked interrupted and preserved for review.
+With no automatic timeout, a stuck task keeps its concurrency slot until the
+caller invokes `agent_abort`, the daemon shuts down, or the adapter process exits.
 
 ## Tests and acceptance
 
@@ -707,7 +789,12 @@ pause/resume, and fake OpenCode adapter lifecycles.
 It also checks capability policy reporting, batch wait completion/deadlines,
 permission wakeups, incremental event long-polling, input bounds, read-only
 defaults, compact/full results, and incremental history headers through MCP and
-daemon IPC.
+daemon IPC. New regression coverage includes follow-up inbox/stale-idle
+completion, turn-scoped usage, 70%/90% budget thresholds, final-step budget
+handling, stable full-patch hashes across display limits, immutable delivery
+snapshots after worktree cleanup and coordinator edits, 21-untracked-file
+omission reporting, `write_paths` scope violations, managed-workspace reuse,
+build/config metadata, and `agent_result`/metadata-only delivery.
 All default tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a

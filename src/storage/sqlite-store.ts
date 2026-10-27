@@ -126,6 +126,13 @@ const MIGRATIONS: string[] = [
   ALTER TABLE tasks ADD COLUMN context_path TEXT;
   ALTER TABLE tasks ADD COLUMN context_files_json TEXT;
   `,
+  `
+  ALTER TABLE tasks ADD COLUMN read_paths_json TEXT;
+  ALTER TABLE tasks ADD COLUMN write_paths_json TEXT;
+  `,
+  `
+  ALTER TABLE tasks ADD COLUMN workspace_path TEXT;
+  `,
 ];
 
 export class SqliteStore {
@@ -167,17 +174,19 @@ export class SqliteStore {
           idempotency_key, idempotency_fingerprint, task, repo_root, task_type,
           model, provider_id, model_id, model_variant, read_only, timeout_seconds,
           status, stage, session_id, server_pid, worktree_path, worktree_git_dir,
-          base_commit, context_path, context_files_json, created_at, started_at,
-          ended_at, error_code, error_message, result_summary, usage_json,
-          last_event_sequence, stop_reason, cancel_requested_at, updated_at
+          base_commit, context_path, context_files_json, read_paths_json, write_paths_json,
+          workspace_path, created_at, started_at, ended_at, error_code, error_message,
+          result_summary, usage_json, last_event_sequence, stop_reason,
+          cancel_requested_at, updated_at
         ) VALUES (
           @id, @parent_task_id, @root_task_id, @turn, @opencode_task_id,
           @idempotency_key, @idempotency_fingerprint, @task, @repo_root, @task_type,
           @model, @provider_id, @model_id, @model_variant, @read_only, @timeout_seconds,
           @status, @stage, @session_id, @server_pid, @worktree_path, @worktree_git_dir,
-          @base_commit, @context_path, @context_files_json, @created_at, @started_at,
-          @ended_at, @error_code, @error_message, @result_summary, @usage_json,
-          @last_event_sequence, @stop_reason, @cancel_requested_at, @updated_at
+          @base_commit, @context_path, @context_files_json, @read_paths_json, @write_paths_json,
+          @workspace_path, @created_at, @started_at, @ended_at, @error_code, @error_message,
+          @result_summary, @usage_json, @last_event_sequence, @stop_reason,
+          @cancel_requested_at, @updated_at
         )
         ON CONFLICT(id) DO UPDATE SET
           parent_task_id = excluded.parent_task_id,
@@ -204,6 +213,9 @@ export class SqliteStore {
           base_commit = excluded.base_commit,
           context_path = excluded.context_path,
           context_files_json = excluded.context_files_json,
+          read_paths_json = excluded.read_paths_json,
+          write_paths_json = excluded.write_paths_json,
+          workspace_path = excluded.workspace_path,
           started_at = excluded.started_at,
           ended_at = excluded.ended_at,
           error_code = excluded.error_code,
@@ -241,6 +253,9 @@ export class SqliteStore {
         base_commit: task.base_commit,
         context_path: task.context_path,
         context_files_json: JSON.stringify(task.context_files),
+        read_paths_json: JSON.stringify(task.read_paths),
+        write_paths_json: JSON.stringify(task.write_paths),
+        workspace_path: task.workspace_path,
         created_at: task.created_at,
         started_at: task.started_at,
         ended_at: task.ended_at,
@@ -476,7 +491,10 @@ function rowToTask(row: Record<string, unknown>): TaskRecord {
     worktree_git_dir: row.worktree_git_dir === null ? null : String(row.worktree_git_dir),
     base_commit: row.base_commit === null ? null : String(row.base_commit),
     context_path: row.context_path === null || row.context_path === undefined ? null : String(row.context_path),
+    workspace_path: row.workspace_path === null || row.workspace_path === undefined ? null : String(row.workspace_path),
     context_files: parseStringArray(row.context_files_json),
+    read_paths: parseStringArray(row.read_paths_json),
+    write_paths: parseStringArray(row.write_paths_json),
     created_at: String(row.created_at),
     started_at: row.started_at === null ? null : String(row.started_at),
     ended_at: row.ended_at === null ? null : String(row.ended_at),

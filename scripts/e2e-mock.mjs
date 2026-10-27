@@ -93,6 +93,7 @@ try {
     "agent_message",
     "agent_diff",
     "agent_delivery",
+    "agent_result",
     "agent_abort",
     "agent_list",
     "agent_cleanup",
@@ -149,6 +150,13 @@ try {
   assert(delivery.json.delivery?.unverified?.length > 0, "delivery missing unverified fields");
   assert(delivery.json.delivery?.context?.verified === true, "delivery context manifest missing");
   assert(delivery.json.delivery?.context?.files?.[0]?.sha256, "delivery context hash missing");
+
+  const result = await call("agent_result", { task_id: taskId });
+  assert(result.json.result?.summary, "agent_result missing summary");
+  assert(
+    result.json.result?.artifacts?.execution_completed === true,
+    "agent_result missing execution status",
+  );
 
   const follow = await call("agent_message", {
     task_id: taskId,

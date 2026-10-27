@@ -69,6 +69,12 @@ export interface SpawnTaskInput {
   idempotency_key?: string;
   /** Read-only tasks can run against a minimal copied context workspace. */
   context_files?: string[];
+  /** Optional repository-relative files/directories the worker may read. */
+  read_paths?: string[];
+  /** Optional repository-relative files/directories the worker may edit. */
+  write_paths?: string[];
+  /** Read-only task: reuse a managed worktree/context workspace owned by this task. */
+  workspace_from_task_id?: string;
 }
 
 export interface ContextFile {
@@ -102,7 +108,10 @@ export interface TaskRecord {
   worktree_git_dir: string | null;
   base_commit: string | null;
   context_path: string | null;
+  workspace_path: string | null;
   context_files: string[];
+  read_paths: string[];
+  write_paths: string[];
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -143,6 +152,9 @@ export interface TaskView {
   session_id: string | null;
   worktree_path: string | null;
   context_path: string | null;
+  workspace_path: string | null;
+  read_paths: string[];
+  write_paths: string[];
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -245,6 +257,14 @@ export interface WaitEventsResult {
 export interface BridgeCapabilities {
   adapter: string;
   simulated: boolean;
+  build: {
+    version: string;
+    git_sha: string | null;
+    dirty: boolean | null;
+    built_at: string | null;
+    config_path: string | null;
+    config_revision: string | null;
+  };
   models: {
     default: string | null;
     allowed: Array<{ model: string; permitted: boolean; error_code: string | null }>;
@@ -277,6 +297,9 @@ export interface PreflightInput {
   model?: string;
   read_only: boolean;
   context_files?: string[];
+  read_paths?: string[];
+  write_paths?: string[];
+  workspace_from_task_id?: string;
 }
 
 export interface PreflightResult {
@@ -288,7 +311,7 @@ export interface PreflightResult {
     read_only: boolean;
   };
   workspace: {
-    kind: "repo_root" | "isolated_worktree" | "context_snapshot";
+    kind: "repo_root" | "isolated_worktree" | "context_snapshot" | "managed_workspace";
     repo_root: string;
     git_top_level: string | null;
     base_commit: string | null;
@@ -322,6 +345,13 @@ export interface PreflightResult {
     subagent: false;
     question: false;
   };
+  path_policy: {
+    per_file_scope: boolean;
+    read_paths: string[];
+    write_paths: string[];
+    enforced_by: "opencode_permissions_and_diff_check" | "whole_worktree";
+    protected_paths: string[];
+  };
   isolation: BridgeCapabilities["execution"];
   budgets: {
     max_tokens: number | null;
@@ -333,6 +363,8 @@ export interface PreflightResult {
   timeout_seconds: {
     default: number;
     max: number;
+    automatic_timeout: boolean;
+    zero_means: "no_automatic_timeout";
   };
   context: {
     enabled: boolean;
@@ -348,6 +380,7 @@ export interface PreflightResult {
 export interface DeliveryOptions {
   task_id: string;
   max_chars?: number;
+  include_patch?: boolean;
 }
 
 export interface DeliveryCommand {
@@ -403,7 +436,9 @@ export interface DeliveryPackage {
   };
   git: {
     available: boolean;
-    reason?: "no_worktree";
+    reason?: "no_worktree" | "workspace_removed";
+    source: "snapshot" | "live" | "unavailable";
+    captured_at: string | null;
     base_commit: string | null;
     worktree_path: string | null;
     status: string;
@@ -421,8 +456,15 @@ export interface DeliveryPackage {
     additions: number;
     deletions: number;
     patch: string;
+    patch_included: boolean;
     patch_truncated: boolean;
     patch_sha256: string | null;
+    patch_bytes: number;
+    display_patch_sha256: string | null;
+    complete_file_count: number;
+    returned_file_count: number;
+    omitted_files: string[];
+    truncation_reason: "max_chars" | "untracked_limit" | "both" | null;
   };
   commands: DeliveryCommand[];
   verification: {
@@ -432,7 +474,30 @@ export interface DeliveryPackage {
     notes: string[];
   };
   findings: DeliveryFindings;
+  policy_snapshot: Record<string, unknown> | null;
+  path_policy: {
+    per_file_scope: boolean;
+    read_paths: string[];
+    write_paths: string[];
+    scope_violations: string[];
+  };
+  budget: {
+    scope: "turn";
+    enforcement: "soft";
+    max_tokens: number | null;
+    max_cost_usd: number | null;
+    exceeded: boolean;
+  };
+  artifacts: {
+    execution_completed: boolean;
+    artifact_available: boolean;
+    worktree_available: boolean;
+    session_usage_recorded: boolean;
+  };
   usage: TaskUsage;
+  session_usage: TaskUsage | null;
+  usage_scope: "turn";
+  session_usage_scope: "session";
   cost: { usd: number | null; known: boolean };
   unverified: string[];
 }

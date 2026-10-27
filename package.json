@@ -14,7 +14,7 @@
     "bridge": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-viewer-assets.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-viewer-assets.mjs && node scripts/write-build-info.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

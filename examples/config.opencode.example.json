@@ -5,8 +5,8 @@
   "scheduler": {
     "max_concurrent": 2,
     "max_queue": 10,
-    "default_timeout_seconds": 300,
-    "max_timeout_seconds": 1800
+    "default_timeout_seconds": 0,
+    "max_timeout_seconds": 604800
   },
   "models": {
     "default": "opencode-go/deepseek-v4.1-flash",

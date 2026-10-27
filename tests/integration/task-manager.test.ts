@@ -167,6 +167,15 @@ describe("TaskManager with mock adapter", () => {
       expect(finished?.error?.code).toBe("BUDGET_EXCEEDED");
       const history = harness.services.manager.history(spawned.task.task_id, { limit: 100 });
       expect(history.events.map((event) => event.event_type)).toContain("task.budget_exceeded");
+      const threshold = history.events.find(
+        (event) => event.event_type === "task.budget.threshold",
+      );
+      expect(threshold?.payload).toMatchObject({
+        threshold_percent: 90,
+        consumed_tokens: 200,
+        max_tokens: 50,
+        enforcement: "soft",
+      });
     } finally {
       await harness.cleanup();
     }
@@ -181,6 +190,27 @@ describe("TaskManager with mock adapter", () => {
       const finished = await harness.services.manager.waitForTerminal(spawned.task.task_id, 4000);
       expect(finished?.status).toBe("timed_out");
       expect(finished?.error?.code).toBe("TASK_TIMEOUT");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("leaves a task running until the caller aborts when timeout_seconds is 0", async () => {
+    const harness = await createHarness({ scenario: "slow" });
+    try {
+      const spawned = await harness.services.manager.spawn(
+        spawnInput(harness.repoRoot, { timeout_seconds: 0 }),
+      );
+      expect(spawned.task.timeout_seconds).toBe(0);
+      const running = await waitForStatus(harness, spawned.task.task_id, ["running"]);
+      expect(running.status).toBe("running");
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(harness.services.manager.status(spawned.task.task_id).status).toBe("running");
+
+      const aborted = await harness.services.manager.abort(spawned.task.task_id);
+      expect(aborted.stopped).toBe(true);
+      expect(aborted.task.status).toBe("cancelled");
     } finally {
       await harness.cleanup();
     }

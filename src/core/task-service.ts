@@ -30,7 +30,7 @@ export interface TaskHistoryResult extends HistoryPage {
 
 export interface TaskDiffResult extends DiffResult {
   task_id: string;
-  reason?: "no_worktree";
+  reason?: "no_worktree" | "workspace_removed";
 }
 
 export interface ToolServices {

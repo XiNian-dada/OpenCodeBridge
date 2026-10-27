@@ -119,6 +119,11 @@ export class IpcServer {
           read_only: parsed.read_only,
           ...(parsed.model === undefined ? {} : { model: parsed.model }),
           ...(parsed.context_files === undefined ? {} : { context_files: parsed.context_files }),
+          ...(parsed.read_paths === undefined ? {} : { read_paths: parsed.read_paths }),
+          ...(parsed.write_paths === undefined ? {} : { write_paths: parsed.write_paths }),
+          ...(parsed.workspace_from_task_id === undefined
+            ? {}
+            : { workspace_from_task_id: parsed.workspace_from_task_id }),
         });
       }
       case "wait":
@@ -163,6 +168,9 @@ export class IpcServer {
         return this.options.service.delivery({
           task_id: parsed.task_id,
           ...(parsed.max_chars === undefined ? {} : { max_chars: parsed.max_chars }),
+          ...(parsed.include_patch === undefined
+            ? {}
+            : { include_patch: parsed.include_patch }),
         });
       }
       case "list":

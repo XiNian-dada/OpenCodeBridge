@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import * as z from "zod/v4";
@@ -22,8 +23,9 @@ const RawConfigSchema = z
       .object({
         max_concurrent: z.number().int().min(1).max(10).optional(),
         max_queue: z.number().int().min(1).max(100).optional(),
-        default_timeout_seconds: z.number().int().min(1).max(3600).optional(),
-        max_timeout_seconds: z.number().int().min(1).max(7200).optional(),
+        // 0 means no automatic execution timeout; the caller stops tasks with agent_abort.
+        default_timeout_seconds: z.number().int().min(0).max(31_536_000).optional(),
+        max_timeout_seconds: z.number().int().min(1).max(31_536_000).optional(),
       })
       .strict()
       .optional(),
@@ -87,6 +89,9 @@ export interface BridgeConfig {
   adapter: "mock" | "opencode";
   log_level: LogLevel;
   data_dir: string | null;
+  /** Effective config source and revision, when loaded from a file. */
+  config_path?: string;
+  config_revision?: string;
   viewer?: { enabled: boolean; auto_open: boolean };
   scheduler: {
     max_concurrent: number;
@@ -236,6 +241,21 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
   }
   const raw = finalParsed.data;
 
+  const defaultTimeoutSeconds = raw.scheduler?.default_timeout_seconds ?? 0;
+  const maxTimeoutSeconds = raw.scheduler?.max_timeout_seconds ?? 604_800;
+  if (defaultTimeoutSeconds > maxTimeoutSeconds) {
+    throw new BridgeError(
+      "INVALID_CONFIG",
+      "scheduler.default_timeout_seconds must not exceed scheduler.max_timeout_seconds",
+      {
+        details: {
+          default_timeout_seconds: defaultTimeoutSeconds,
+          max_timeout_seconds: maxTimeoutSeconds,
+        },
+      },
+    );
+  }
+
   const allowedRepoRoots = (raw.security?.allowed_repo_roots ?? []).map((root) => {
     const expanded = expandHome(root);
     if (!isAbsolute(expanded)) {
@@ -250,6 +270,11 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
     adapter: raw.adapter ?? "mock",
     log_level: raw.log_level ?? "info",
     data_dir: dataDir,
+    config_path: configPath,
+    config_revision: createHash("sha256")
+      .update(JSON.stringify(raw))
+      .digest("hex")
+      .slice(0, 16),
     viewer: {
       enabled: raw.viewer?.enabled ?? true,
       // Legacy auto_open is accepted but never launches the system browser.
@@ -258,8 +283,8 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
     scheduler: {
       max_concurrent: raw.scheduler?.max_concurrent ?? 2,
       max_queue: raw.scheduler?.max_queue ?? 10,
-      default_timeout_seconds: raw.scheduler?.default_timeout_seconds ?? 300,
-      max_timeout_seconds: raw.scheduler?.max_timeout_seconds ?? 1800,
+      default_timeout_seconds: defaultTimeoutSeconds,
+      max_timeout_seconds: maxTimeoutSeconds,
     },
     models: {
       default: raw.models?.default ?? (raw.adapter === "opencode" ? "opencode-go/deepseek-v4.1-flash" : null),

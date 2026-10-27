@@ -38,7 +38,10 @@ function task(repoRoot: string, baseCommit: string): TaskRecord {
     worktree_git_dir: null,
     base_commit: baseCommit,
     context_path: null,
+    workspace_path: null,
     context_files: [],
+    read_paths: [],
+    write_paths: [],
     created_at: new Date().toISOString(),
     started_at: null,
     ended_at: null,
@@ -85,6 +88,13 @@ describe("DiffManager", () => {
       expect(diff.patch).toContain("changed");
       expect(diff.patch).toContain("untracked.txt");
       expect(diff.patch_truncated).toBe(false);
+      expect(diff.files.find((entry) => entry.path === "untracked.txt")?.additions).toBe(2);
+      expect(diff.full_patch_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(diff.full_patch_bytes).toBe(Buffer.byteLength(diff.patch));
+      expect(diff.complete_file_count).toBe(diff.files.length);
+      expect(diff.returned_file_count).toBe(diff.files.length);
+      expect(diff.omitted_files).toEqual([]);
+      expect(diff.truncation_reason).toBeNull();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -110,6 +120,48 @@ describe("DiffManager", () => {
       expect(diff.files.map((file) => file.path)).toEqual(["README.md"]);
       expect(diff.patch_truncated).toBe(true);
       expect(diff.patch).toContain("diff truncated");
+      expect(diff.full_patch_sha256).toMatch(/^[0-9a-f]{64}$/);
+
+      const full = await new DiffManager().getDiff({
+        worktreePath: created.path,
+        baseCommit: base,
+        file: "README.md",
+        maxChars: 200_000,
+      });
+      expect(full.full_patch_sha256).toBe(diff.full_patch_sha256);
+      expect(full.patch_truncated).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports untracked patch omissions instead of silently truncating the file list", async () => {
+    const dir = await realpath(await makeTempDir());
+    try {
+      const repo = await makeGitRepo(dir);
+      const base = (await execFileAsync("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
+      const worktrees = new WorktreeManager({ dataDir: join(dir, "data"), logger: createLogger("silent") });
+      const created = await worktrees.create(task(repo, base));
+      for (let index = 1; index <= 21; index++) {
+        await writeFile(
+          join(created.path, `new-${String(index).padStart(2, "0")}.txt`),
+          `file ${index}\n`,
+          "utf8",
+        );
+      }
+
+      const diff = await new DiffManager().getDiff({
+        worktreePath: created.path,
+        baseCommit: base,
+      });
+
+      expect(diff.files).toHaveLength(21);
+      expect(diff.complete_file_count).toBe(21);
+      expect(diff.returned_file_count).toBe(20);
+      expect(diff.omitted_files).toEqual(["new-21.txt"]);
+      expect(diff.patch_truncated).toBe(true);
+      expect(diff.truncation_reason).toBe("untracked_limit");
+      expect(diff.patch).not.toContain("file 21");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -6,7 +6,7 @@ import type { BridgeConfig } from "../../src/config.js";
 import { createLogger } from "../../src/logging.js";
 import { OpenCodeAdapter } from "../../src/opencode/adapter.js";
 import { OpenCodeHttpClient } from "../../src/opencode/http-client.js";
-import type { ManagedOpenCodeServer } from "../../src/opencode/process.js";
+import type { ManagedOpenCodeServer, ManagedOpenCodeServerOptions } from "../../src/opencode/process.js";
 import { makeTempDir } from "../helpers/fixtures.js";
 import { startFakeOpenCode, type FakeScenario } from "../helpers/fake-opencode.js";
 import { sandboxAvailable } from "../../src/security/sandbox.js";
@@ -56,6 +56,7 @@ async function makeOpenCodeHarness(scenario: FakeScenario) {
 
   const client = new OpenCodeHttpClient({ baseUrl: fake.baseUrl, password: fake.password });
   let stops = 0;
+  let lastServerOptions: ManagedOpenCodeServerOptions | null = null;
   const server: ManagedOpenCodeServer = {
     client,
     info: { version: "2.1.2", pid: 1234, urls: [fake.baseUrl], paths: { tmp: "/tmp" } },
@@ -71,7 +72,10 @@ async function makeOpenCodeHarness(scenario: FakeScenario) {
   const adapter = new OpenCodeAdapter({
     config,
     logger: createLogger("silent"),
-    serverStarter: async () => server,
+    serverStarter: async (options) => {
+      lastServerOptions = options;
+      return server;
+    },
   });
   const services = createServices(config, adapter, createLogger("silent"));
 
@@ -82,6 +86,7 @@ async function makeOpenCodeHarness(scenario: FakeScenario) {
     services,
     server,
     stopCount: () => stops,
+    lastServerOptions: () => lastServerOptions,
     async cleanup() {
       await services.manager.shutdown();
       await fake.close();
@@ -153,6 +158,35 @@ describe("OpenCodeAdapter", () => {
   });
 
 
+  it("injects scoped edit permissions for write_paths", async () => {
+    const harness = await makeOpenCodeHarness("success");
+    try {
+      if (!sandboxAvailable()) return;
+      const repo = await makeGitRepo(harness.tempDir, "scoped-repo");
+      const spawned = await harness.services.manager.spawn({
+        ...input(repo),
+        read_only: false,
+        write_paths: ["allowed.txt"],
+      });
+      const finished = await harness.services.manager.waitForTerminal(spawned.task.task_id, 5000);
+      expect(finished?.status).toBe("completed");
+      const permissions = harness.lastServerOptions()?.configContent.permissions as Array<{
+        action: string;
+        resource: string;
+        effect: string;
+      }>;
+      expect(permissions).toEqual(
+        expect.arrayContaining([
+          { action: "edit", resource: "allowed.txt", effect: "allow" },
+          { action: "edit", resource: join(finished!.worktree_path!, "allowed.txt"), effect: "allow" },
+          { action: "edit", resource: "*", effect: "deny" },
+        ]),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("resumes the same OpenCode session for a follow-up message", async () => {
     const harness = await makeOpenCodeHarness("success");
     try {
@@ -172,6 +206,10 @@ describe("OpenCodeAdapter", () => {
       expect(child?.status).toBe("completed");
       expect(child?.session_id).toBe(completed?.session_id);
       expect(child?.result_summary).toBe("Fake task completed turn 2");
+      expect(child?.usage.total_tokens).toBe(15);
+      expect(child?.usage.input_tokens).toBe(10);
+      expect(child?.usage.output_tokens).toBe(5);
+      expect(child?.estimated_cost_usd).toBeCloseTo(0.003, 6);
 
       const history = harness.services.manager.history(followUp.task.task_id, { limit: 100 });
       const types = history.events.map((event) => event.event_type);
@@ -179,7 +217,47 @@ describe("OpenCodeAdapter", () => {
       expect(types).toContain("opencode.session.resumed");
       const replies = history.events.filter((event) => event.event_type === "opencode.message" && event.payload.role === "assistant");
       expect(replies.map((event) => event.payload.text)).toEqual([
-        "Fake task completed turn 1", "Fake task completed turn 2",
+        "Fake task completed turn 2",
+      ]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not complete a follow-up from the previous turn's answer or idle state", async () => {
+    const harness = await makeOpenCodeHarness("followup-delay");
+    try {
+      const first = await harness.services.manager.spawn(input(harness.tempDir));
+      const completed = await harness.services.manager.waitForTerminal(first.task.task_id, 5000);
+      expect(completed?.status).toBe("completed");
+      expect(completed?.result_summary).toBe("Fake task completed turn 1");
+
+      const followUp = await harness.services.manager.message(
+        first.task.task_id,
+        "Please continue with one more check.",
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const duringInbox = harness.services.manager.status(followUp.task.task_id);
+      expect(duringInbox.status).not.toBe("completed");
+      expect(duringInbox.error).toBeNull();
+
+      const child = await harness.services.manager.waitForTerminal(followUp.task.task_id, 5000);
+      expect(child?.status).toBe("completed");
+      expect(child?.result_summary).toBe("Fake task completed turn 2");
+      expect(child?.usage.total_tokens).toBe(15);
+      expect(child?.usage.input_tokens).toBe(10);
+      expect(child?.usage.output_tokens).toBe(5);
+
+      const replies = harness.services.manager
+        .history(followUp.task.task_id, { limit: 100 })
+        .events.filter(
+          (event) =>
+            event.event_type === "opencode.message" &&
+            event.payload.role === "assistant",
+        );
+      expect(replies.map((event) => event.payload.text)).toEqual([
+        "Fake task completed turn 2",
       ]);
     } finally {
       await harness.cleanup();
@@ -222,6 +300,26 @@ describe("OpenCodeAdapter", () => {
       const aborted = await harness.services.manager.abort(spawned.task.task_id);
       expect(aborted.stopped).toBe(true);
       expect(aborted.task.status).toBe("cancelled");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("records a completed final step over budget without issuing a pointless abort", async () => {
+    const harness = await makeOpenCodeHarness("success");
+    try {
+      harness.config.models.max_tokens = 10;
+      const spawned = await harness.services.manager.spawn(input(harness.tempDir));
+      const finished = await harness.services.manager.waitForTerminal(spawned.task.task_id, 5000);
+      expect(finished?.status).toBe("failed");
+      expect(finished?.error?.code).toBe("BUDGET_EXCEEDED");
+      expect(finished?.result_summary).toBe("Fake task completed turn 1");
+      const events = harness.services.manager.history(spawned.task.task_id, { limit: 200 }).events;
+      const types = events.map((event) => event.event_type);
+      expect(types).toContain("task.budget.threshold");
+      expect(types).toContain("task.budget_exceeded");
+      expect(types).not.toContain("task.cancelling");
+      expect(types).toContain("task.failed");
     } finally {
       await harness.cleanup();
     }

@@ -30,10 +30,10 @@ export const AgentSpawnInput = z
     timeout_seconds: z
       .number()
       .int()
-      .min(1)
-      .max(7200)
+      .min(0)
+      .max(31_536_000)
       .optional()
-      .describe("Task timeout; the bridge's configured maximum still applies"),
+      .describe("Optional hard execution deadline. Omit for the configured default; 0 disables the automatic timeout and leaves stopping to agent_abort"),
     idempotency_key: z
       .string()
       .min(1)
@@ -45,6 +45,21 @@ export const AgentSpawnInput = z
       .max(100)
       .optional()
       .describe("Read-only tasks only: repository-relative files to copy into a minimal context workspace; dependencies are not resolved automatically"),
+    read_paths: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe("Optional repository-relative read paths to declare; reads outside may still be needed for dependencies"),
+    write_paths: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe("Writable tasks only: repo-relative files or directories ending in / that the worker may edit; violations fail the task"),
+    workspace_from_task_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Read-only only: reuse a completed task's managed worktree/context workspace for a new session"),
   })
   .strict();
 
@@ -70,6 +85,9 @@ export const AgentPreflightInput = z
       .max(100)
       .optional()
       .describe("Read-only tasks only: repository-relative files to hash and plan for the context workspace"),
+    read_paths: z.array(z.string().min(1)).max(100).optional(),
+    write_paths: z.array(z.string().min(1)).max(100).optional(),
+    workspace_from_task_id: z.string().min(1).optional(),
   })
   .strict();
 
@@ -83,6 +101,16 @@ export const AgentDeliveryInput = z
       .max(200000)
       .optional()
       .describe("Maximum patch characters to include (default 200000)"),
+    include_patch: z
+      .boolean()
+      .default(true)
+      .describe("Set false to return only metadata and stable hashes without patch text"),
+  })
+  .strict();
+
+export const AgentResultInput = z
+  .object({
+    task_id: taskId,
   })
   .strict();
 

@@ -113,6 +113,7 @@ describe("MCP stdio server with mock adapter", () => {
           "agent_message",
           "agent_diff",
           "agent_delivery",
+          "agent_result",
           "agent_cleanup",
           "agent_abort",
           "agent_list",
@@ -203,6 +204,17 @@ describe("MCP stdio server with mock adapter", () => {
       });
       expect((delivery.json.delivery as { unverified: unknown[] }).unverified.length).toBeGreaterThan(0);
 
+      const resultTool = await callTool(mcp.client, "agent_result", { task_id: taskId });
+      expect(resultTool.isError).toBe(false);
+      const result = resultTool.json.result as Record<string, unknown>;
+      expect(result).toMatchObject({
+        task_id: taskId,
+        status: "completed",
+        summary: "Mock task completed successfully",
+      });
+      expect((result.findings as { verified: boolean }).verified).toBe(false);
+      expect((result.artifacts as { execution_completed: boolean }).execution_completed).toBe(true);
+
       const followUp = await callTool(mcp.client, "agent_message", {
         task_id: taskId,
         message: "Add one more assertion.",
@@ -270,8 +282,13 @@ describe("MCP stdio server with mock adapter", () => {
     let mcp: McpHandle | null = null;
     try {
       mcp = await startMcp(harness.configPath, "slow");
-      const spawned = await callTool(mcp.client, "agent_spawn", spawnInput(harness.repoRoot));
-      const taskId = String((spawned.json.task as Record<string, unknown>).task_id);
+      const spawned = await callTool(mcp.client, "agent_spawn", {
+        ...spawnInput(harness.repoRoot),
+        timeout_seconds: 0,
+      });
+      const spawnedTask = spawned.json.task as Record<string, unknown>;
+      const taskId = String(spawnedTask.task_id);
+      expect(spawnedTask.timeout_seconds).toBe(0);
 
       await waitForTaskStatus(mcp.client, taskId, ["running"]);
 

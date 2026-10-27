@@ -14,6 +14,7 @@ import {
   AgentCapabilitiesInput,
   AgentPreflightInput,
   AgentDeliveryInput,
+  AgentResultInput,
   AgentWaitInput,
   AgentEventsInput,
   AgentViewerInput,
@@ -27,9 +28,40 @@ type ToolResult = {
 
 function success(payload: Record<string, unknown>): ToolResult {
   return {
-    content: [{ type: "text", text: JSON.stringify(payload) }],
+    content: [{ type: "text", text: compactText(payload) }],
     structuredContent: payload,
   };
+}
+
+function compactText(payload: Record<string, unknown>): string {
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      summary[key] = typeof value === "string" && value.length > 500
+        ? `${value.slice(0, 500)}…`
+        : value;
+    } else if (key === "task" && typeof value === "object" && !Array.isArray(value)) {
+      const task = value as Record<string, unknown>;
+      summary.task = {
+        task_id: task.task_id,
+        status: task.status,
+        turn: task.turn,
+        read_only: task.read_only,
+        result_summary_truncated:
+          typeof task.result_summary === "string" && task.result_summary.length > 500,
+      };
+    } else if (Array.isArray(value)) {
+      summary[key] = `[${value.length} items]`;
+    } else {
+      summary[key] = "[see structuredContent]";
+    }
+  }
+  return JSON.stringify(summary);
 }
 
 function failure(error: unknown): ToolResult {
@@ -90,6 +122,11 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           read_only: input.read_only,
           ...(input.model === undefined ? {} : { model: input.model }),
           ...(input.context_files === undefined ? {} : { context_files: input.context_files }),
+          ...(input.read_paths === undefined ? {} : { read_paths: input.read_paths }),
+          ...(input.write_paths === undefined ? {} : { write_paths: input.write_paths }),
+          ...(input.workspace_from_task_id === undefined
+            ? {}
+            : { workspace_from_task_id: input.workspace_from_task_id }),
         });
         return success({ ok: true, preflight });
       } catch (error) {
@@ -152,7 +189,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
     {
       title: "Spawn an OpenCode task",
       description:
-        "Delegate clear, bounded work asynchronously. Inspect agent_capabilities first. Defaults to read-only; returns immediately. Use agent_wait for completion. Codex handles complex decisions and final review; worker cannot run tests or shell commands.",
+        "Delegate clear, bounded work asynchronously. Inspect agent_capabilities first. Defaults to read-only with no automatic execution timeout; set timeout_seconds to a positive value for a hard deadline. Returns immediately. Use agent_wait for completion and agent_abort to stop the worker. Codex handles complex decisions and final review; worker cannot run tests or shell commands.",
       inputSchema: AgentSpawnInput,
       annotations: {
         readOnlyHint: false,
@@ -175,6 +212,11 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           ...(input.context_files === undefined
             ? {}
             : { context_files: input.context_files }),
+          ...(input.read_paths === undefined ? {} : { read_paths: input.read_paths }),
+          ...(input.write_paths === undefined ? {} : { write_paths: input.write_paths }),
+          ...(input.workspace_from_task_id === undefined
+            ? {}
+            : { workspace_from_task_id: input.workspace_from_task_id }),
         });
         return success({
           ok: true,
@@ -286,6 +328,12 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           deletions: diff.deletions,
           patch: diff.patch,
           patch_truncated: diff.patch_truncated,
+          full_patch_sha256: diff.full_patch_sha256,
+          full_patch_bytes: diff.full_patch_bytes,
+          complete_file_count: diff.complete_file_count,
+          returned_file_count: diff.returned_file_count,
+          omitted_files: diff.omitted_files,
+          truncation_reason: diff.truncation_reason,
         });
       } catch (error) {
         return failure(error);
@@ -306,9 +354,73 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
       try {
         const delivery = await service.delivery({
           task_id: input.task_id,
+          include_patch: input.include_patch,
           ...(input.max_chars === undefined ? {} : { max_chars: input.max_chars }),
         });
         return success({ ok: true, delivery });
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "agent_result",
+    {
+      title: "Get the current turn's result",
+      description:
+        "Return the current turn's final reply, blocking items, changed files, stable patch hash, budget/artifact status, usage and verification gaps. Metadata-only by default; use agent_delivery for a full patch.",
+      inputSchema: AgentResultInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (input) => {
+      try {
+        const [task, delivery] = await Promise.all([
+          service.status(input.task_id),
+          service.delivery({ task_id: input.task_id, include_patch: false }),
+        ]);
+        return success({
+          ok: true,
+          result: {
+            task_id: task.task_id,
+            status: task.status,
+            turn: task.turn,
+            session_id: task.session_id,
+            summary: task.result_summary,
+            error: task.error,
+            findings: delivery.findings,
+            policy_snapshot: delivery.policy_snapshot,
+            path_policy: delivery.path_policy,
+            model: delivery.model,
+            budget: delivery.budget,
+            artifacts: delivery.artifacts,
+            usage: delivery.usage,
+            session_usage: delivery.session_usage,
+            verification: delivery.verification,
+            git: {
+              available: delivery.git.available,
+              reason: delivery.git.reason,
+              source: delivery.git.source,
+              captured_at: delivery.git.captured_at,
+              base_commit: delivery.git.base_commit,
+              files: delivery.git.files,
+              added: delivery.git.added,
+              modified: delivery.git.modified,
+              deleted: delivery.git.deleted,
+              untracked: delivery.git.untracked,
+              additions: delivery.git.additions,
+              deletions: delivery.git.deletions,
+              patch_sha256: delivery.git.patch_sha256,
+              patch_bytes: delivery.git.patch_bytes,
+              complete_file_count: delivery.git.complete_file_count,
+              returned_file_count: delivery.git.returned_file_count,
+              omitted_files: delivery.git.omitted_files,
+              truncation_reason: delivery.git.truncation_reason,
+            },
+            commands: delivery.commands,
+            unverified: delivery.unverified,
+          },
+        });
       } catch (error) {
         return failure(error);
       }
@@ -393,9 +505,9 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
   server.registerTool(
     "agent_abort",
     {
-      title: "Abort a task",
+      title: "Stop a task (caller-controlled)",
       description:
-        "Request cancellation of a queued or running task. The bridge verifies the adapter stopped before reporting success.",
+        "Stop a queued or running task. This is the caller-controlled termination path for tasks without an automatic timeout. The bridge verifies the adapter stopped before reporting success; work already produced is preserved.",
       inputSchema: AgentAbortInput,
       annotations: {
         readOnlyHint: false,

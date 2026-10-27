@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { BridgeError } from "../errors.js";
@@ -11,8 +12,11 @@ export interface DiffFile {
   untracked: boolean;
 }
 
+export type DiffUnavailableReason = "no_worktree" | "workspace_removed";
+
 export interface DiffResult {
   available: boolean;
+  reason?: DiffUnavailableReason;
   worktree_path: string | null;
   base_commit: string | null;
   git_status: string;
@@ -25,6 +29,12 @@ export interface DiffResult {
   deletions: number;
   patch: string;
   patch_truncated: boolean;
+  full_patch_sha256: string | null;
+  full_patch_bytes: number;
+  complete_file_count: number;
+  returned_file_count: number;
+  omitted_files: string[];
+  truncation_reason: "max_chars" | "untracked_limit" | "both" | null;
 }
 
 export interface DiffOptions {
@@ -38,6 +48,13 @@ export class DiffManager {
   async getDiff(options: DiffOptions): Promise<DiffResult> {
     const maxChars = options.maxChars ?? 40_000;
     const file = options.file;
+    const worktreeExists = await stat(options.worktreePath).then(
+      (info) => info.isDirectory(),
+      () => false,
+    );
+    if (!worktreeExists) {
+      return emptyDiff(options, "workspace_removed");
+    }
     const statusText = await git(options.worktreePath, ["status", "--porcelain=v1"]);
     const statusLines = statusText.stdout.split("\n").filter((line) => line.length > 0);
 
@@ -123,8 +140,11 @@ export class DiffManager {
 
     let patch = patchResult.stdout;
     const untrackedPatches: string[] = [];
-    for (const path of untracked.slice(0, 20)) {
-      if (file !== undefined && path !== file) continue;
+    const untrackedPatchLimit = 20;
+    const patchedUntracked = untracked
+      .filter((path) => file === undefined || path === file)
+      .slice(0, untrackedPatchLimit);
+    for (const path of patchedUntracked) {
       const result = await git(
         options.worktreePath,
         ["diff", "--no-index", "--no-ext-diff", "--", "/dev/null", path],
@@ -136,10 +156,24 @@ export class DiffManager {
       patch = `${patch}${patch === "" ? "" : "\n"}${untrackedPatches.join("\n")}`;
     }
 
-    const truncated = patch.length > maxChars;
-    if (truncated) {
+    const fullPatch = patch;
+    const fullPatchSha256 = createHash("sha256").update(fullPatch).digest("hex");
+    const fullPatchBytes = Buffer.byteLength(fullPatch);
+    const omittedFiles = untracked
+      .filter((path) => file === undefined || path === file)
+      .slice(untrackedPatchLimit);
+    const truncatedByChars = patch.length > maxChars;
+    if (truncatedByChars) {
       patch = `${patch.slice(0, maxChars)}\n...[diff truncated at ${maxChars} characters]`;
     }
+    const truncationReason =
+      truncatedByChars && omittedFiles.length > 0
+        ? "both"
+        : truncatedByChars
+          ? "max_chars"
+          : omittedFiles.length > 0
+            ? "untracked_limit"
+            : null;
 
     return {
       available: true,
@@ -154,9 +188,43 @@ export class DiffManager {
       additions,
       deletions,
       patch,
-      patch_truncated: truncated,
+      patch_truncated: truncationReason !== null,
+      full_patch_sha256: fullPatchSha256,
+      full_patch_bytes: fullPatchBytes,
+      complete_file_count: files.length,
+      returned_file_count: Math.max(0, files.length - omittedFiles.length),
+      omitted_files: omittedFiles,
+      truncation_reason: truncationReason,
     };
   }
+}
+
+function emptyDiff(
+  options: DiffOptions,
+  reason: DiffUnavailableReason,
+): DiffResult {
+  return {
+    available: false,
+    reason,
+    worktree_path: options.worktreePath,
+    base_commit: options.baseCommit,
+    git_status: "",
+    files: [],
+    added: [],
+    modified: [],
+    deleted: [],
+    untracked: [],
+    additions: 0,
+    deletions: 0,
+    patch: "",
+    patch_truncated: false,
+    full_patch_sha256: null,
+    full_patch_bytes: 0,
+    complete_file_count: 0,
+    returned_file_count: 0,
+    omitted_files: [],
+    truncation_reason: null,
+  };
 }
 
 async function countLines(path: string): Promise<number> {
@@ -165,7 +233,12 @@ async function countLines(path: string): Promise<number> {
     if (!info.isFile() || info.size > 1_000_000) return 0;
     const { readFile } = await import("node:fs/promises");
     const text = await readFile(path, "utf8");
-    return text === "" ? 0 : text.split("\n").length;
+    if (text === "") return 0;
+    // Match `wc -l`: a trailing newline terminates the last line rather than
+    // starting an extra empty line.
+    return text.endsWith("\n")
+      ? text.split("\n").length - 1
+      : text.split("\n").length;
   } catch {
     return 0;
   }

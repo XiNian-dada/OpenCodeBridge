@@ -55,9 +55,12 @@ const SpawnParams = z
     task_type: z.enum(TASK_TYPES),
     model: z.string().min(1).optional(),
     read_only: z.boolean(),
-    timeout_seconds: z.number().int().min(1).max(7200),
+    timeout_seconds: z.number().int().min(0).max(31_536_000),
     idempotency_key: z.string().min(1).max(200).optional(),
     context_files: z.array(z.string().min(1)).max(100).optional(),
+    read_paths: z.array(z.string().min(1)).max(100).optional(),
+    write_paths: z.array(z.string().min(1)).max(100).optional(),
+    workspace_from_task_id: z.string().min(1).optional(),
   })
   .strict();
 
@@ -68,12 +71,16 @@ const PreflightParams = z
     model: z.string().min(1).optional(),
     read_only: z.boolean(),
     context_files: z.array(z.string().min(1)).max(100).optional(),
+    read_paths: z.array(z.string().min(1)).max(100).optional(),
+    write_paths: z.array(z.string().min(1)).max(100).optional(),
+    workspace_from_task_id: z.string().min(1).optional(),
   })
   .strict();
 const DeliveryParams = z
   .object({
     task_id: z.string().min(1),
     max_chars: z.number().int().min(1000).max(200_000).optional(),
+    include_patch: z.boolean().optional(),
   })
   .strict();
 const WaitParams = z.object({
