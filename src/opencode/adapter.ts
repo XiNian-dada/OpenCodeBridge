@@ -154,6 +154,7 @@ interface ActiveRun {
   baselineOutcome: string | null;
   promptStartedAt: number | null;
   turnSteps: number;
+  executionStarted: boolean;
   executionSucceeded: boolean;
 }
 
@@ -488,6 +489,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         baselineOutcome: typeof session.outcome === "string" ? session.outcome : null,
         promptStartedAt: null,
         turnSteps: 0,
+        executionStarted: false,
         executionSucceeded: false,
       };
       this.active.set(session.id, run);
@@ -881,6 +883,9 @@ export class OpenCodeAdapter implements AgentAdapter {
         if (event.type === "session.step.ended") {
           run.turnSteps += 1;
         }
+        if (event.type === "session.execution.started") {
+          run.executionStarted = true;
+        }
         if (event.type === "session.execution.succeeded") {
           run.executionSucceeded = true;
         }
@@ -923,6 +928,18 @@ export class OpenCodeAdapter implements AgentAdapter {
         }
 
         if (isErrorEvent(event)) {
+          // A resumed SSE stream can replay a previous turn's error before the
+          // new execution starts. Do not fail the current turn on that replay.
+          if (
+            run.baselineMessageIds.size > 0 &&
+            !run.executionStarted &&
+            run.turnSteps === 0
+          ) {
+            const messages = await run.client
+              .messages(run.sessionId, 200, run.eventsAbort.signal)
+              .catch(() => []);
+            if (!hasCurrentTurnAssistant(run, messages)) continue;
+          }
           if (mapped !== null) context.emit(mapped);
           run.errorMessage = eventErrorMessage(event);
           run.completion.resolve("error");

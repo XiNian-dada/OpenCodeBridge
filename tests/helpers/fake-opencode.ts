@@ -201,7 +201,10 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
           // a stale idle event arrives before the new assistant answer exists.
           session.idle = true;
           session.updated = Date.now();
-          setTimeout(() => emit(session.id, "session.idle", {}), 0);
+          setTimeout(() => {
+            emit(session.id, "session.error", { message: "stale previous turn error" });
+            emit(session.id, "session.idle", {});
+          }, 0);
           setTimeout(() => {
             session.idle = false;
             session.updated = Date.now();

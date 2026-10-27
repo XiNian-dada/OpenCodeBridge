@@ -797,8 +797,9 @@ daemon IPC. New regression coverage includes follow-up inbox/stale-idle
 completion, turn-scoped usage, 70%/90% budget thresholds, final-step budget
 handling, stable full-patch hashes across display limits, immutable delivery
 snapshots after worktree cleanup and coordinator edits, 21-untracked-file
-omission reporting, `write_paths` scope violations, managed-workspace reuse,
-build/config metadata, and `agent_result`/metadata-only delivery.
+omission reporting and full-hash completeness, `write_paths` scope violations,
+managed-workspace reuse, build/config metadata, historical budget snapshots, and
+`agent_result`/metadata-only delivery.
 All default tests are free.
 
 A live OpenCode smoke test is opt-in and makes **no model call** (it admits a
