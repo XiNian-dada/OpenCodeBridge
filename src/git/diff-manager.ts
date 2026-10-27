@@ -43,6 +43,8 @@ export interface DiffOptions {
   baseCommit: string;
   file?: string;
   maxChars?: number;
+  /** Internal archival capture bypasses the interactive 20-file display limit. */
+  includeFullPatch?: boolean;
 }
 
 export class DiffManager {
@@ -141,8 +143,8 @@ export class DiffManager {
 
     const trackedPatch = patchResult.stdout;
     const allUntracked = untracked.filter((path) => file === undefined || path === file);
-    const displayUntrackedLimit = 20;
     const fullUntrackedLimit = 200;
+    const displayUntrackedLimit = options.includeFullPatch ? fullUntrackedLimit : 20;
     const untrackedPatchByPath = new Map<string, string>();
     for (const path of allUntracked.slice(0, fullUntrackedLimit)) {
       const result = await git(

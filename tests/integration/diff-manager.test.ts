@@ -169,6 +169,13 @@ describe("DiffManager", () => {
       expect(diff.patch_truncated).toBe(true);
       expect(diff.truncation_reason).toBe("untracked_limit");
       expect(diff.patch).not.toContain("file 21");
+      const archival = await new DiffManager().getDiff({
+        worktreePath: created.path, baseCommit: base, includeFullPatch: true,
+      });
+      expect(archival.patch).toContain("file 21");
+      expect(archival.omitted_files).toEqual([]);
+      expect(archival.full_patch_sha256).toBe(diff.full_patch_sha256);
+      expect(archival.patch_truncated).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

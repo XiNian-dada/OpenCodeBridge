@@ -1018,14 +1018,10 @@ export class OpenCodeAdapter implements AgentAdapter {
         event_type: "opencode.result_read_failed",
         payload: { message: error instanceof Error ? error.message : String(error) },
       });
-      return {
-        session: null,
-        usage: emptyUsage(),
-        session_usage: emptyUsage(),
-        summary: `OpenCode completed, but result readback failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
+      throw new BridgeError("ADAPTER_ERROR", "OpenCode result readback failed; completion could not be verified", {
+        cause: error,
+        details: { session_id: run.sessionId },
+      });
     }
 
     // The live 2.1 API lists newest messages first; mocks/older APIs may not.
@@ -1228,7 +1224,6 @@ function usageFromSession(
   const calls = Math.max(
     modelCalls,
     messages.filter((message) => roleOf(message) === "assistant").length,
-    cumulative.input > 0 || cumulative.output > 0 ? 1 : 0,
   );
   return usageFromCumulative(cumulative, baseline, modelCost, gateway, calls);
 }

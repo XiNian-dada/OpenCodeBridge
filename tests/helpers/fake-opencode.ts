@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-export type FakeScenario = "success" | "abort" | "error" | "followup-delay";
+export type FakeScenario = "success" | "abort" | "error" | "followup-delay" | "followup-wait" | "result-read-fail";
 
 interface FakeSession {
   id: string;
@@ -32,6 +32,7 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
   const expectedAuth = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
   const sessions = new Map<string, FakeSession>();
   const sseClients = new Set<ServerResponse>();
+  let completedMessageReads = 0;
   let server: Server;
 
   function emit(sessionId: string, type: string, data: Record<string, unknown>): void {
@@ -165,6 +166,10 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
       }
 
       if (req.method === "GET" && segments[3] === "message") {
+        if (scenario === "result-read-fail" && session.outcome === "succeeded" && ++completedMessageReads > 1) {
+          json(res, 500, { message: "Result readback unavailable" });
+          return;
+        }
         json(res, 200, { data: [...session.messages].reverse(), cursor: { previous: null, next: null } });
         return;
       }
@@ -182,7 +187,8 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
         json(res, 200, { data: { id: "inbox", sessionID: session.id } });
 
         const turn = session.messages.filter((message) => message.type === "user").length;
-        if (scenario === "success" || (scenario === "followup-delay" && turn === 1)) {
+        if (scenario === "success" || scenario === "result-read-fail" ||
+            ((scenario === "followup-delay" || scenario === "followup-wait") && turn === 1)) {
           setTimeout(() => {
             emit(session.id, "session.tool.called", {
               callID: "call_1",

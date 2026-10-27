@@ -1926,6 +1926,7 @@ export class TaskManager {
         worktreePath,
         baseCommit: task.base_commit,
         maxChars: SNAPSHOT_MAX_PATCH_CHARS,
+        includeFullPatch: true,
       });
       if (!diff.available) return;
       const snapshot: DeliverySnapshot = {

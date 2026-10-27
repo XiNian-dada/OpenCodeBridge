@@ -264,6 +264,38 @@ describe("OpenCodeAdapter", () => {
     }
   });
 
+  it("reports zero turn usage when a follow-up is cancelled before any model call", async () => {
+    const h = await makeOpenCodeHarness("followup-wait");
+    try {
+      const first = await h.services.manager.spawn(input(h.tempDir));
+      await h.services.manager.waitForTerminal(first.task.task_id, 5000);
+      const next = await h.services.manager.message(first.task.task_id, "Wait without invoking a model");
+      const deadline = Date.now() + 3000;
+      while (!h.services.manager.history(next.task.task_id, { limit: 100 }).events.some(
+        (event) => event.event_type === "opencode.prompt.admitted",
+      )) {
+        if (Date.now() >= deadline) throw new Error("Prompt was not admitted");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await h.services.manager.abort(next.task.task_id);
+      const done = await h.services.manager.waitForTerminal(next.task.task_id, 5000);
+      expect(done?.status).toBe("cancelled");
+      expect(done?.usage).toMatchObject({ total_tokens: 0, model_calls: 0, cost_usd: 0 });
+      const delivery = await h.services.service.delivery({ task_id: next.task.task_id });
+      expect(delivery.session_usage).toMatchObject({ total_tokens: 15, model_calls: 1 });
+    } finally { await h.cleanup(); }
+  });
+
+  it("does not report completion when final result readback fails", async () => {
+    const h = await makeOpenCodeHarness("result-read-fail");
+    try {
+      const task = await h.services.manager.spawn(input(h.tempDir));
+      const done = await h.services.manager.waitForTerminal(task.task.task_id, 5000);
+      expect(done?.status).toBe("failed");
+      expect(done?.error).toMatchObject({ code: "ADAPTER_ERROR", message: expect.stringContaining("readback failed") });
+    } finally { await h.cleanup(); }
+  });
+
   it("keeps a stable authorized directory when a follow-up adds context", async () => {
     const h = await makeOpenCodeHarness("success");
     try {

@@ -1,4 +1,5 @@
 import { realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createServices } from "../../src/app.js";
@@ -20,7 +21,7 @@ class WritingAdapter implements AgentAdapter {
   readonly supportsWrites = true;
   readonly requiresIsolatedWorktree = true;
 
-  constructor(private readonly filename = "new-file.txt") {}
+  constructor(private readonly filename = "new-file.txt", private readonly extraFiles = 0) {}
 
   async probe(): Promise<AdapterProbe> {
     return { name: this.name, version: "1", compatible: true };
@@ -42,6 +43,9 @@ class WritingAdapter implements AgentAdapter {
       return { summary: "read the managed workspace", usage: emptyUsage() };
     }
     await writeFile(join(task.worktree_path!, this.filename), "hello from adapter\n", "utf8");
+    for (let index = 0; index < this.extraFiles; index++) {
+      await writeFile(join(task.worktree_path!, `extra-${String(index).padStart(2, "0")}.txt`), `extra ${index}\n`);
+    }
     context.emit({
       source: "tool",
       event_type: "tool.called",
@@ -99,7 +103,7 @@ function config(tempDir: string): BridgeConfig {
 describe("TaskManager worktree integration", () => {
   it("creates an isolated worktree, runs the adapter there, and exposes its diff", async () => {
     const dir = await realpath(await makeTempDir());
-    const services = createServices(config(dir), new WritingAdapter(), createLogger("silent"));
+    const services = createServices(config(dir), new WritingAdapter("new-file.txt", 20), createLogger("silent"));
     try {
       const repo = await makeGitRepo(dir);
       const spawned = await services.manager.spawn({
@@ -119,7 +123,8 @@ describe("TaskManager worktree integration", () => {
       const diff = await services.manager.diff(spawned.task.task_id);
       expect(diff.available).toBe(true);
       expect(diff.untracked).toContain("new-file.txt");
-      expect(diff.patch).toContain("hello from adapter");
+      expect(diff.omitted_files).toContain("new-file.txt");
+      expect(diff.patch_truncated).toBe(true);
 
       const delivery = await services.service.delivery({ task_id: spawned.task.task_id });
       expect(delivery.git.available).toBe(true);
@@ -127,6 +132,9 @@ describe("TaskManager worktree integration", () => {
       expect(delivery.git.patch).toContain("hello from adapter");
       expect(delivery.git.patch_sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(delivery.git.source).toBe("snapshot");
+      expect(delivery.git.files).toHaveLength(21);
+      expect(delivery.git.omitted_files).toEqual([]);
+      expect(createHash("sha256").update(delivery.git.patch).digest("hex")).toBe(delivery.git.patch_sha256);
       expect(delivery.git.captured_at).not.toBeNull();
       expect(delivery.usage_scope).toBe("turn");
       expect(delivery.session_usage_scope).toBe("session");
@@ -152,6 +160,7 @@ describe("TaskManager worktree integration", () => {
       expect(afterRemoval.git.source).toBe("snapshot");
       expect(afterRemoval.git.patch_sha256).toBe(originalHash);
       expect(afterRemoval.git.patch).toContain("hello from adapter");
+      expect(afterRemoval.git.patch).toContain("extra-19.txt");
 
       const metadataOnly = await services.service.delivery({
         task_id: spawned.task.task_id,
