@@ -1,5 +1,5 @@
 import { readFile, writeFile, rename, unlink } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as z from "zod/v4";
 import type { BridgeConfig } from "../config.js";
 import { ModelPolicy } from "../policy/model-policy.js";
@@ -44,10 +44,15 @@ export class ViewerSettings {
       const opencode = { ...(raw.opencode as Record<string, unknown>) };
       if (data.go_api_key) opencode.go_api_key = data.go_api_key;
       if (data.clear_go_api_key) delete opencode.go_api_key;
-      await writeFile(temp, JSON.stringify({ ...raw, models, opencode }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+      const next = { ...raw, models, opencode };
+      await writeFile(temp, JSON.stringify(next, null, 2) + "\n", { flag: "wx", mode: 0o600 });
       created = true;
       await rename(temp, this.path);
       this.config.models.default = data.default_model;
+      this.config.config_revision = createHash("sha256")
+        .update(JSON.stringify(next))
+        .digest("hex")
+        .slice(0, 16);
       if (data.go_api_key) this.config.opencode.go_api_key = data.go_api_key;
       if (data.clear_go_api_key) delete this.config.opencode.go_api_key;
     } finally { this.saving = false; if (created) await unlink(temp).catch(() => undefined); }

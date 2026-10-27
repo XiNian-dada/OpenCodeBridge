@@ -34,7 +34,8 @@ export interface DiffResult {
   complete_file_count: number;
   returned_file_count: number;
   omitted_files: string[];
-  truncation_reason: "max_chars" | "untracked_limit" | "both" | null;
+  full_patch_complete: boolean;
+  truncation_reason: "max_chars" | "untracked_limit" | "both" | "full_patch_limit" | null;
 }
 
 export interface DiffOptions {
@@ -138,31 +139,36 @@ export class DiffManager {
     const additions = files.reduce((sum, entry) => sum + entry.additions, 0);
     const deletions = files.reduce((sum, entry) => sum + entry.deletions, 0);
 
-    let patch = patchResult.stdout;
-    const untrackedPatches: string[] = [];
-    const untrackedPatchLimit = 20;
-    const patchedUntracked = untracked
-      .filter((path) => file === undefined || path === file)
-      .slice(0, untrackedPatchLimit);
-    for (const path of patchedUntracked) {
+    const trackedPatch = patchResult.stdout;
+    const allUntracked = untracked.filter((path) => file === undefined || path === file);
+    const displayUntrackedLimit = 20;
+    const fullUntrackedLimit = 200;
+    const untrackedPatchByPath = new Map<string, string>();
+    for (const path of allUntracked.slice(0, fullUntrackedLimit)) {
       const result = await git(
         options.worktreePath,
         ["diff", "--no-index", "--no-ext-diff", "--", "/dev/null", path],
         true,
       );
-      if (result.stdout !== "") untrackedPatches.push(result.stdout);
+      if (result.stdout !== "") untrackedPatchByPath.set(path, result.stdout);
     }
-    if (untrackedPatches.length > 0) {
-      patch = `${patch}${patch === "" ? "" : "\n"}${untrackedPatches.join("\n")}`;
-    }
-
-    const fullPatch = patch;
+    const joinPatch = (paths: string[]): string => {
+      const parts = [
+        trackedPatch,
+        ...paths
+          .map((path) => untrackedPatchByPath.get(path) ?? "")
+          .filter((part) => part !== ""),
+      ];
+      return parts.filter((part) => part !== "").join("\n");
+    };
+    const fullPatch = joinPatch(allUntracked.slice(0, fullUntrackedLimit));
+    const displayPatch = joinPatch(allUntracked.slice(0, displayUntrackedLimit));
+    const fullPatchComplete = allUntracked.length <= fullUntrackedLimit;
     const fullPatchSha256 = createHash("sha256").update(fullPatch).digest("hex");
     const fullPatchBytes = Buffer.byteLength(fullPatch);
-    const omittedFiles = untracked
-      .filter((path) => file === undefined || path === file)
-      .slice(untrackedPatchLimit);
-    const truncatedByChars = patch.length > maxChars;
+    const omittedFiles = allUntracked.slice(displayUntrackedLimit);
+    const truncatedByChars = displayPatch.length > maxChars;
+    let patch = displayPatch;
     if (truncatedByChars) {
       patch = `${patch.slice(0, maxChars)}\n...[diff truncated at ${maxChars} characters]`;
     }
@@ -173,7 +179,9 @@ export class DiffManager {
           ? "max_chars"
           : omittedFiles.length > 0
             ? "untracked_limit"
-            : null;
+            : !fullPatchComplete
+              ? "full_patch_limit"
+              : null;
 
     return {
       available: true,
@@ -194,6 +202,7 @@ export class DiffManager {
       complete_file_count: files.length,
       returned_file_count: Math.max(0, files.length - omittedFiles.length),
       omitted_files: omittedFiles,
+      full_patch_complete: fullPatchComplete,
       truncation_reason: truncationReason,
     };
   }
@@ -223,6 +232,7 @@ function emptyDiff(
     complete_file_count: 0,
     returned_file_count: 0,
     omitted_files: [],
+    full_patch_complete: false,
     truncation_reason: null,
   };
 }
@@ -232,7 +242,9 @@ async function countLines(path: string): Promise<number> {
     const info = await stat(path);
     if (!info.isFile() || info.size > 1_000_000) return 0;
     const { readFile } = await import("node:fs/promises");
-    const text = await readFile(path, "utf8");
+    const data = await readFile(path);
+    if (data.includes(0)) return 0;
+    const text = data.toString("utf8");
     if (text === "") return 0;
     // Match `wc -l`: a trailing newline terminates the last line rather than
     // starting an extra empty line.

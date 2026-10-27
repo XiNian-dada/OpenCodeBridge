@@ -17,6 +17,7 @@ it("authenticates settings, blocks CSRF, never echoes keys, and updates durable 
     const endpoint = `${url.origin}/api/settings`;
     const headers = { authorization: `Bearer ${new URLSearchParams(url.hash.slice(1)).get("key")}`, origin: url.origin, "content-type": "application/json" };
     const body = JSON.stringify({ default_model: "mock/echo", go_api_key: "test-private-key" });
+    const beforeRevision = h.config.config_revision;
     expect((await fetch(endpoint)).status).toBe(401);
     expect((await fetch(endpoint, { method: "PUT", headers: { ...headers, origin: "https://evil.invalid" }, body })).status).toBe(403);
     expect((await fetch(endpoint, { method: "PUT", headers: { authorization: headers.authorization, "content-type": "application/json" }, body })).status).toBe(403);
@@ -28,6 +29,7 @@ it("authenticates settings, blocks CSRF, never echoes keys, and updates durable 
     expect(JSON.stringify(info)).not.toContain("test-private-key");
     expect(info).toMatchObject({ go_key_configured: true, credential_valid: false });
     expect(h.config.opencode.go_api_key).toBe("test-private-key");
+    expect(h.config.config_revision).not.toBe(beforeRevision);
     const raw = JSON.parse(await readFile(path, "utf8"));
     expect(raw.opencode.go_api_key).toBe("test-private-key");
     expect(raw.security.allowed_repo_roots).toEqual([h.repoRoot]);

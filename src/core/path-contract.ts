@@ -11,7 +11,14 @@ export const DEFAULT_PROTECTED_PATHS = [
   "yarn.lock",
   "Cargo.lock",
   ".env",
+  ".env.*",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
 ] as const;
+
+const PROTECTED_SUFFIXES = [".pem", ".key", ".p12", ".pfx"];
 
 export interface PathContract {
   read_paths: string[];
@@ -29,8 +36,15 @@ export function pathMatchesAllowed(file: string, allowed: readonly string[]): bo
 
 export function isProtectedPath(file: string): boolean {
   const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+  const basename = normalized.split("/").at(-1) ?? normalized;
+  if (basename === ".env" || basename.startsWith(".env.")) return true;
+  if (PROTECTED_SUFFIXES.some((suffix) => basename.endsWith(suffix))) return true;
   return DEFAULT_PROTECTED_PATHS.some((entry) => {
     if (entry.endsWith("/")) return normalized === entry.slice(0, -1) || normalized.startsWith(entry);
+    if (entry.includes("*")) {
+      const suffix = entry.slice(1);
+      return basename.endsWith(suffix);
+    }
     return normalized === entry;
   });
 }

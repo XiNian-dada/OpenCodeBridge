@@ -189,7 +189,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
     {
       title: "Spawn an OpenCode task",
       description:
-        "Delegate clear, bounded work asynchronously. Inspect agent_capabilities first. Defaults to read-only with no automatic execution timeout; set timeout_seconds to a positive value for a hard deadline. Returns immediately. Use agent_wait for completion and agent_abort to stop the worker. Codex handles complex decisions and final review; worker cannot run tests or shell commands.",
+        "Delegate clear, bounded work asynchronously. Inspect agent_capabilities first. Defaults to read-only with no bridge-wide automatic execution timeout by default; set timeout_seconds to a positive value for a hard deadline. Returns immediately. Use agent_wait for completion and agent_abort to stop the worker. Codex handles complex decisions and final review; worker cannot run tests or shell commands.",
       inputSchema: AgentSpawnInput,
       annotations: {
         readOnlyHint: false,
@@ -333,6 +333,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           complete_file_count: diff.complete_file_count,
           returned_file_count: diff.returned_file_count,
           omitted_files: diff.omitted_files,
+          full_patch_complete: diff.full_patch_complete,
           truncation_reason: diff.truncation_reason,
         });
       } catch (error) {
@@ -416,6 +417,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
               complete_file_count: delivery.git.complete_file_count,
               returned_file_count: delivery.git.returned_file_count,
               omitted_files: delivery.git.omitted_files,
+              full_patch_complete: delivery.git.full_patch_complete,
               truncation_reason: delivery.git.truncation_reason,
             },
             commands: delivery.commands,

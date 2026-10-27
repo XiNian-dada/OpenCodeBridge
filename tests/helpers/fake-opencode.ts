@@ -206,7 +206,7 @@ export async function startFakeOpenCode(scenario: FakeScenario): Promise<FakeOpe
             session.idle = false;
             session.updated = Date.now();
             complete(session);
-          }, 350);
+          }, 900);
         } else if (scenario === "error") {
           setTimeout(() => {
             session.idle = true;

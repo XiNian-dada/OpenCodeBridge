@@ -14,7 +14,7 @@ function git(args) {
 }
 
 const gitSha = git(["rev-parse", "HEAD"]) || null;
-const dirty = git(["status", "--porcelain", "--untracked-files=no"])
+const dirty = git(["status", "--porcelain"])
   ? true
   : gitSha === null
     ? null

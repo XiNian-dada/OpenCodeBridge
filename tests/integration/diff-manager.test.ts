@@ -73,6 +73,8 @@ describe("DiffManager", () => {
       await writeFile(join(created.path, "staged.txt"), "staged\n", "utf8");
       await execFileAsync("git", ["-C", created.path, "add", "staged.txt"]);
       await writeFile(join(created.path, "untracked.txt"), "one\ntwo\n", "utf8");
+      await writeFile(join(created.path, "empty.txt"), "", "utf8");
+      await writeFile(join(created.path, "no-newline.txt"), "single", "utf8");
 
       const diff = await new DiffManager().getDiff({
         worktreePath: created.path,
@@ -89,11 +91,14 @@ describe("DiffManager", () => {
       expect(diff.patch).toContain("untracked.txt");
       expect(diff.patch_truncated).toBe(false);
       expect(diff.files.find((entry) => entry.path === "untracked.txt")?.additions).toBe(2);
+      expect(diff.files.find((entry) => entry.path === "empty.txt")?.additions).toBe(0);
+      expect(diff.files.find((entry) => entry.path === "no-newline.txt")?.additions).toBe(1);
       expect(diff.full_patch_sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(diff.full_patch_bytes).toBe(Buffer.byteLength(diff.patch));
       expect(diff.complete_file_count).toBe(diff.files.length);
       expect(diff.returned_file_count).toBe(diff.files.length);
       expect(diff.omitted_files).toEqual([]);
+      expect(diff.full_patch_complete).toBe(true);
       expect(diff.truncation_reason).toBeNull();
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -159,6 +164,8 @@ describe("DiffManager", () => {
       expect(diff.complete_file_count).toBe(21);
       expect(diff.returned_file_count).toBe(20);
       expect(diff.omitted_files).toEqual(["new-21.txt"]);
+      expect(diff.full_patch_complete).toBe(true);
+      expect(diff.full_patch_bytes).toBeGreaterThan(Buffer.byteLength(diff.patch));
       expect(diff.patch_truncated).toBe(true);
       expect(diff.truncation_reason).toBe("untracked_limit");
       expect(diff.patch).not.toContain("file 21");

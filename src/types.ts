@@ -464,7 +464,8 @@ export interface DeliveryPackage {
     complete_file_count: number;
     returned_file_count: number;
     omitted_files: string[];
-    truncation_reason: "max_chars" | "untracked_limit" | "both" | null;
+    full_patch_complete: boolean;
+    truncation_reason: "max_chars" | "untracked_limit" | "both" | "full_patch_limit" | null;
   };
   commands: DeliveryCommand[];
   verification: {

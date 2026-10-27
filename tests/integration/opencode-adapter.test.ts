@@ -320,6 +320,17 @@ describe("OpenCodeAdapter", () => {
       expect(types).toContain("task.budget_exceeded");
       expect(types).not.toContain("task.cancelling");
       expect(types).toContain("task.failed");
+
+      harness.config.models.max_tokens = 1_000_000;
+      const delivery = await harness.services.service.delivery({
+        task_id: spawned.task.task_id,
+      });
+      expect(delivery.budget).toMatchObject({
+        max_tokens: 10,
+        exceeded: true,
+        scope: "turn",
+      });
+      expect(delivery.runtime.opencode_version).toBe("2.1.2");
     } finally {
       await harness.cleanup();
     }

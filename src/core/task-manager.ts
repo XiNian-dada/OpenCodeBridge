@@ -623,19 +623,40 @@ export class TaskManager {
     const artifactAvailable =
       executionCompleted ||
       (diff.available && (diff.files.length > 0 || diff.patch !== ""));
-    const budgetExceeded =
-      (this.options.config.models.max_tokens !== null &&
-        usage.total_tokens > this.options.config.models.max_tokens) ||
-      (this.options.config.models.max_cost_usd !== null &&
-        usage.cost_known &&
-        usage.cost_usd !== null &&
-        usage.cost_usd > this.options.config.models.max_cost_usd);
-
-    const commands = extractDeliveryCommands(events, simulated);
-    const context = await readContextManifest(task, dataDir);
+    const budgetEvent = events
+      .filter((event) => event.event_type === "task.budget_exceeded")
+      .at(-1)?.payload ?? null;
     const policySnapshot = events
       .filter((event) => event.payload.policy !== undefined)
       .at(-1)?.payload.policy;
+    const policy = typeof policySnapshot === "object" && policySnapshot !== null
+      ? (policySnapshot as Record<string, unknown>)
+      : null;
+    const policyTokens = limitField(policy, "max_tokens");
+    const budgetTokens = limitField(budgetEvent, "max_tokens");
+    const policyCost = limitField(policy, "max_cost_usd");
+    const budgetCost = limitField(budgetEvent, "max_cost_usd");
+    const effectiveMaxTokens = policyTokens.found
+      ? policyTokens.value
+      : budgetTokens.found
+        ? budgetTokens.value
+        : this.options.config.models.max_tokens;
+    const effectiveMaxCost = policyCost.found
+      ? policyCost.value
+      : budgetCost.found
+        ? budgetCost.value
+        : this.options.config.models.max_cost_usd;
+    const budgetExceeded =
+      task.error_code === "BUDGET_EXCEEDED" ||
+      budgetEvent !== null ||
+      (effectiveMaxTokens !== null && usage.total_tokens > effectiveMaxTokens) ||
+      (effectiveMaxCost !== null &&
+        usage.cost_known &&
+        usage.cost_usd !== null &&
+        usage.cost_usd > effectiveMaxCost);
+
+    const commands = extractDeliveryCommands(events, simulated);
+    const context = await readContextManifest(task, dataDir);
     const scopeViolationPayload = events
       .filter((event) => event.event_type === "task.scope_violation")
       .at(-1)?.payload;
@@ -723,6 +744,7 @@ export class TaskManager {
         complete_file_count: diff.complete_file_count,
         returned_file_count: diff.returned_file_count,
         omitted_files: diff.omitted_files,
+        full_patch_complete: diff.full_patch_complete,
         truncation_reason: truncationReason,
       },
       commands,
@@ -741,7 +763,12 @@ export class TaskManager {
         bridge_version: runtimeBuild.version,
         bridge_git_sha: runtimeBuild.git_sha,
         opencode_version: opencodeVersion,
-        config_revision: this.options.config.config_revision ?? null,
+        config_revision:
+          typeof policySnapshot === "object" &&
+          policySnapshot !== null &&
+          typeof (policySnapshot as Record<string, unknown>).config_revision === "string"
+            ? ((policySnapshot as Record<string, unknown>).config_revision as string)
+            : this.options.config.config_revision ?? null,
       },
       path_policy: {
         per_file_scope: task.write_paths.length > 0,
@@ -752,8 +779,8 @@ export class TaskManager {
       budget: {
         scope: "turn",
         enforcement: "soft",
-        max_tokens: this.options.config.models.max_tokens,
-        max_cost_usd: this.options.config.models.max_cost_usd,
+        max_tokens: effectiveMaxTokens,
+        max_cost_usd: effectiveMaxCost,
         exceeded: budgetExceeded,
       },
       artifacts: {
@@ -1243,6 +1270,7 @@ export class TaskManager {
         complete_file_count: 0,
         returned_file_count: 0,
         omitted_files: [],
+        full_patch_complete: false,
         truncation_reason: null,
       };
     }
@@ -1664,10 +1692,14 @@ export class TaskManager {
         clearTimeout(timeoutTimer);
         timeoutTimer = null;
       }
-      const usage = result.usage ?? task.usage;
+      const usage = bestUsage(result.usage, task.usage);
+      const latestSession = latestSessionUsage(
+        this.options.eventStore.list(task.id, { limit: 10_000 }).events,
+      );
       const sessionUsage =
-        result.session_usage ??
-        latestSessionUsage(this.options.eventStore.list(task.id, { limit: 10_000 }).events);
+        result.session_usage === undefined
+          ? latestSession
+          : bestUsage(result.session_usage, latestSession ?? emptyUsage());
       if (handle.stopReason === null && result.stopped !== true) {
         try {
           const violations = await this.scopeViolation(task);
@@ -1865,12 +1897,7 @@ export class TaskManager {
       );
     }
     const changed = [
-      ...new Set([
-        ...diff.added,
-        ...diff.modified,
-        ...diff.deleted,
-        ...diff.untracked,
-      ]),
+      ...new Set(diff.files.map((file) => file.path)),
     ];
     const contract: PathContract = {
       read_paths: task.read_paths,
@@ -1932,7 +1959,7 @@ export class TaskManager {
   }
 
   private finishRun(task: TaskRecord, handle: RunHandle, result: AdapterRunResult): void {
-    const usage = result.usage ?? task.usage;
+    const usage = bestUsage(result.usage, task.usage);
 
     if (handle.stopReason === "budget" || this.budgetExceeded(usage)) {
       if (handle.stopReason !== "budget") {
@@ -2197,11 +2224,11 @@ export class TaskManager {
     if (event.event_type === "usage.updated") {
       const usage = parseUsage(event.payload.usage);
       if (usage !== null) {
-        task.usage = usage;
+        task.usage = bestUsage(usage, task.usage);
         this.store?.saveUsage(task);
-        this.checkBudgetThresholds(task, usage);
+        this.checkBudgetThresholds(task, task.usage);
         if (
-          this.budgetExceeded(usage) &&
+          this.budgetExceeded(task.usage) &&
           handle !== undefined &&
           handle.stopReason === null &&
           !handle.executionSucceeded
@@ -2545,8 +2572,8 @@ function truncatePatch(
 
 function combineTruncation(
   displayTruncated: boolean,
-  source: "max_chars" | "untracked_limit" | "both" | null,
-): "max_chars" | "untracked_limit" | "both" | null {
+  source: "max_chars" | "untracked_limit" | "both" | "full_patch_limit" | null,
+): "max_chars" | "untracked_limit" | "both" | "full_patch_limit" | null {
   if (displayTruncated && source !== null && source !== "max_chars") return "both";
   if (displayTruncated) return "max_chars";
   return source;
@@ -2577,6 +2604,7 @@ function unavailableTaskDiff(
     complete_file_count: 0,
     returned_file_count: 0,
     omitted_files: [],
+    full_patch_complete: false,
     truncation_reason: null,
   };
 }
@@ -2589,6 +2617,21 @@ function latestSessionUsage(events: BridgeEvent[]): TaskUsage | null {
     if (usage !== null) return usage;
   }
   return null;
+}
+
+function bestUsage(
+  primary: TaskUsage | undefined,
+  fallback: TaskUsage,
+): TaskUsage {
+  if (primary === undefined) return fallback;
+  if (primary.total_tokens !== fallback.total_tokens) {
+    return primary.total_tokens > fallback.total_tokens ? primary : fallback;
+  }
+  if (primary.model_calls !== fallback.model_calls) {
+    return primary.model_calls > fallback.model_calls ? primary : fallback;
+  }
+  if (!primary.cost_known && fallback.cost_known) return fallback;
+  return primary;
 }
 
 function parseUsage(value: unknown): TaskUsage | null {
@@ -2761,6 +2804,18 @@ function stringField(record: Record<string, unknown>, key: string): string | nul
 function numberField(record: Record<string, unknown>, key: string): number | null {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function limitField(
+  record: Record<string, unknown> | null,
+  key: string,
+): { found: boolean; value: number | null } {
+  if (record === null || !(key in record)) return { found: false, value: null };
+  const value = record[key];
+  return {
+    found: true,
+    value: typeof value === "number" && Number.isFinite(value) ? value : null,
+  };
 }
 
 function killProcessGroup(pid: number): void {

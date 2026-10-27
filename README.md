@@ -549,9 +549,9 @@ delivery/history reports the cumulative session total.
 Returns the task worktree's Git status, modified/added/deleted/untracked files,
 line counts, and a patch. Use `file` to inspect one path and `max_chars` to limit
 the displayed patch. `full_patch_sha256`, `full_patch_bytes`,
-`complete_file_count`, `returned_file_count`, `omitted_files`, and
-`truncation_reason` describe completeness; `max_chars` never changes the full
-hash. Worktrees are retained after completion or failure for review. If a
+`complete_file_count`, `returned_file_count`, `omitted_files`,
+`full_patch_complete`, and `truncation_reason` describe completeness;
+`max_chars` never changes the full hash. Worktrees are retained after completion or failure for review. If a
 worktree was removed, this returns `available: false` with
 `reason: "workspace_removed"`; use `agent_delivery` for the frozen snapshot.
 
@@ -582,7 +582,9 @@ the local gateway flag, context manifest, `usage` for this turn,
 `session_usage` for the whole session (with explicit scopes), the policy snapshot
 recorded at task creation, runtime versions (`bridge_version`,
 `bridge_git_sha`, `opencode_version`, `config_revision`), budget/artifact flags,
-and a verification status.
+and a verification status. `git.full_patch_complete: false` means the full hash
+covers only the bounded untracked-file subset (currently 200 files); display
+omissions are listed in `omitted_files`.
 Review/analysis tasks are prompted to end with a fenced JSON findings block;
 `delivery.findings` contains the parsed `location`, `trigger`, `evidence`, and
 `confidence` values, and `verified: false` when the block is missing, malformed,

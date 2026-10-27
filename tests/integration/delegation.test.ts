@@ -98,6 +98,10 @@ describe("delegation discovery and waiting", () => {
         config_revision: h.config.config_revision,
         max_tokens: null,
       });
+      expect(delivery.runtime).toMatchObject({
+        bridge_version: "0.1.0",
+        config_revision: h.config.config_revision,
+      });
       expect(delivery.unverified.length).toBeGreaterThan(0);
     } finally { await h.cleanup(); }
   });

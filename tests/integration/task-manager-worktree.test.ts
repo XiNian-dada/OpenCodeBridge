@@ -163,6 +163,13 @@ describe("TaskManager worktree integration", () => {
       expect(metadataOnly.git.patch_sha256).toBe(originalHash);
       expect(metadataOnly.git.patch_bytes).toBeGreaterThan(0);
 
+      const smallDisplay = await services.service.delivery({
+        task_id: spawned.task.task_id,
+        max_chars: 1000,
+      });
+      expect(smallDisplay.git.patch_sha256).toBe(originalHash);
+      expect(smallDisplay.git.patch.length).toBeLessThanOrEqual(1000 + 100);
+
       const removedDiff = await services.manager.diff(spawned.task.task_id);
       expect(removedDiff.available).toBe(false);
       expect(removedDiff.reason).toBe("workspace_removed");
