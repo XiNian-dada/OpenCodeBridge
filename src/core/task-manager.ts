@@ -645,6 +645,12 @@ export class TaskManager {
             (value): value is string => typeof value === "string",
           )
         : [];
+    const serverStarted = events
+      .filter((event) => event.event_type === "opencode.server.started")
+      .at(-1)?.payload;
+    const opencodeVersion =
+      typeof serverStarted?.version === "string" ? serverStarted.version : null;
+    const runtimeBuild = buildInfo();
     const findings = parseReviewFindings(finalAssistantText(events));
     const verificationStatus = simulated
       ? "simulated"
@@ -731,6 +737,12 @@ export class TaskManager {
         typeof policySnapshot === "object" && policySnapshot !== null
           ? (policySnapshot as Record<string, unknown>)
           : null,
+      runtime: {
+        bridge_version: runtimeBuild.version,
+        bridge_git_sha: runtimeBuild.git_sha,
+        opencode_version: opencodeVersion,
+        config_revision: this.options.config.config_revision ?? null,
+      },
       path_policy: {
         per_file_scope: task.write_paths.length > 0,
         read_paths: [...task.read_paths],

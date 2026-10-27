@@ -475,6 +475,12 @@ export interface DeliveryPackage {
   };
   findings: DeliveryFindings;
   policy_snapshot: Record<string, unknown> | null;
+  runtime: {
+    bridge_version: string;
+    bridge_git_sha: string | null;
+    opencode_version: string | null;
+    config_revision: string | null;
+  };
   path_policy: {
     per_file_scope: boolean;
     read_paths: string[];

@@ -560,7 +560,7 @@ worktree was removed, this returns `available: false` with
 A compact, current-turn entry point. Returns the task status, final reply,
 structured findings, model resolution, turn/session usage, budget and artifact
 flags, changed-file list, stable patch SHA-256, observed commands, policy
-snapshot, and verification gaps. It never includes patch text; call
+snapshot, runtime versions, and verification gaps. It never includes patch text; call
 `agent_delivery` when the full patch is needed. This avoids fetching status,
 history, diff and delivery separately just to read the final answer.
 
@@ -580,7 +580,9 @@ The package also includes observed shell/tool commands and exit codes, the
 actually resolved model when an `opencode.model.resolved` event exists,
 the local gateway flag, context manifest, `usage` for this turn,
 `session_usage` for the whole session (with explicit scopes), the policy snapshot
-recorded at task creation, budget/artifact flags, and a verification status.
+recorded at task creation, runtime versions (`bridge_version`,
+`bridge_git_sha`, `opencode_version`, `config_revision`), budget/artifact flags,
+and a verification status.
 Review/analysis tasks are prompted to end with a fenced JSON findings block;
 `delivery.findings` contains the parsed `location`, `trigger`, `evidence`, and
 `confidence` values, and `verified: false` when the block is missing, malformed,

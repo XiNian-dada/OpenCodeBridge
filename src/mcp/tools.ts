@@ -390,6 +390,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
             error: task.error,
             findings: delivery.findings,
             policy_snapshot: delivery.policy_snapshot,
+            runtime: delivery.runtime,
             path_policy: delivery.path_policy,
             model: delivery.model,
             budget: delivery.budget,
