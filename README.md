@@ -1,5 +1,7 @@
 # Codex–OpenCode Bridge
 
+[English](README.md) | [中文说明](README_zh.md)
+
 An MCP bridge that lets Codex delegate bounded coding tasks to OpenCode while
 keeping task state, prompts, events, and cancellation under bridge control.
 
