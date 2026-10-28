@@ -67,9 +67,13 @@ describe("local live task viewer", () => {
       const { origin, headers } = connection(viewer);
       const first = await h.services.service.spawn(spawnInput(h.repoRoot));
       expect(first.viewer_url).toBe(viewer.info().url);
+      expect(first.viewer_action).toBe("open_if_missing");
       expect(viewer.info().auto_open).toBe(false);
       const list = await getJson<ViewerTaskList>(`${origin}/api/tasks`, headers);
       expect(list.focused_task_id).toBe(first.task.task_id);
+      expect(viewer.info().connected).toBe(false);
+      await getJson<ViewerTaskList>(`${origin}/api/tasks?viewer=1`, headers);
+      expect(viewer.info()).toMatchObject({ connected: true, presentation: "reuse_existing" });
       const initial = await getJson<ViewerHistory>(`${origin}/api/tasks/${first.task.task_id}/events`, headers);
       expect(initial.task).not.toHaveProperty("task");
       expect(initial.events.some((event: { event_type: string }) => event.event_type === "task.created")).toBe(true);
@@ -78,12 +82,39 @@ describe("local live task viewer", () => {
       expect(next.events.every((event) => event.sequence > initial.events.at(-1)!.sequence)).toBe(true);
       expect(next.events.some((event: { event_type: string }) => event.event_type === "task.completed")).toBe(true);
       const second = await h.services.service.message(first.task.task_id, "Continue with the same scope");
+      expect(second.viewer_action).toBe("reuse_existing");
+      const independent = await h.services.service.spawn(spawnInput(h.repoRoot));
+      expect(independent.viewer_action).toBe("reuse_existing");
+      expect(independent.viewer_url).toBe(first.viewer_url);
+      // A later spawn is focused; explicitly focus this turn for the next assertion.
+      viewer.showTask(second.task.task_id);
       expect(second.task.session_id).toBe(h.services.manager.status(first.task.task_id).session_id);
       expect((await getJson<ViewerTaskList>(`${origin}/api/tasks`, headers)).focused_task_id).toBe(second.task.task_id);
       viewer.showTask(second.task.task_id);
       expect(viewer.info().auto_open).toBe(false);
       await expect(h.services.service.spawn({ ...spawnInput(h.repoRoot), model: "forbidden/model" })).rejects.toMatchObject({ code: "MODEL_NOT_ALLOWED" });
     } finally { await viewer.close(); await h.cleanup(); }
+  });
+
+  it("expires viewer presence and accepts only authenticated browser heartbeats", async () => {
+    const h = await createHarness();
+    let now = Date.now();
+    const viewer = new TaskViewer({ service: h.services.service, logger: createLogger("silent"), now: () => now });
+    try {
+      await viewer.listen();
+      const { origin, headers } = connection(viewer);
+      expect((await fetch(`${origin}/api/tasks?viewer=1`)).status).toBe(401);
+      expect(viewer.info().presentation).toBe("open_if_missing");
+      await fetch(`${origin}/api/tasks`, { headers });
+      expect(viewer.info().connected).toBe(false);
+      await fetch(`${origin}/api/tasks?viewer=1`, { headers });
+      expect(viewer.info()).toMatchObject({ connected: true, last_seen_at: new Date(now).toISOString() });
+      now += 90_001;
+      expect(viewer.info()).toMatchObject({ connected: false, presentation: "open_if_missing" });
+      await fetch(`${origin}/api/tasks?viewer=1`, { headers });
+      expect(viewer.info().presentation).toBe("reuse_existing");
+    } finally { await viewer.close(); await h.cleanup(); }
+    expect(viewer.info().presentation).toBe("disabled");
   });
 
   it("returns every event across pages, including original prompts and redacted tool payloads", async () => {

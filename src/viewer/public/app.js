@@ -1018,7 +1018,7 @@ function renderTranscript() {
 async function tick() {
   try {
     if (!key) throw new Error("链接缺少访问密钥，请运行 bridge viewer 重新打开。");
-    const data = await api("/api/tasks");
+    const data = await api("/api/tasks?viewer=1");
     state.tasks = Array.isArray(data.tasks) ? data.tasks : [];
     state.conversations = groupConversations(state.tasks);
 

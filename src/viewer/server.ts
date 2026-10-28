@@ -15,6 +15,10 @@ const assets = new Map([
   ["/style.css", { file: "style.css", type: "text/css; charset=utf-8" }],
 ]);
 
+// Hidden tabs can throttle polling to once a minute. Absence of a heartbeat is
+// only a hint to inspect tabs, never proof that a new tab must be created.
+const VIEWER_PRESENCE_TTL_MS = 90_000;
+
 async function readAsset(file: string): Promise<Uint8Array> {
   const url = new URL(`./public/${file}`, import.meta.url);
   // tsx development serves source assets; bundle browser imports there too.
@@ -31,6 +35,7 @@ export interface ViewerOptions {
   service: TaskService;
   logger: Logger;
   settings?: ViewerSettings;
+  now?: () => number;
 }
 
 /** Local transcript UI; authenticated settings updates are narrowly validated. */
@@ -44,6 +49,7 @@ export class TaskViewer {
   });
   private origin = "";
   private focusedTask: string | null = null;
+  private lastClientSeen: number | null = null;
   constructor(private readonly options: ViewerOptions) {
     this.server.requestTimeout = 10_000;
     this.server.headersTimeout = 10_000;
@@ -65,7 +71,15 @@ export class TaskViewer {
   }
 
   info(): TaskViewerInfo {
-    return { url: this.origin ? `${this.origin}/#key=${this.token}` : null, auto_open: false };
+    const connected = this.lastClientSeen !== null &&
+      (this.options.now?.() ?? Date.now()) - this.lastClientSeen < VIEWER_PRESENCE_TTL_MS;
+    return {
+      url: this.origin ? `${this.origin}/#key=${this.token}` : null,
+      auto_open: false,
+      connected,
+      last_seen_at: this.lastClientSeen === null ? null : new Date(this.lastClientSeen).toISOString(),
+      presentation: !this.origin ? "disabled" : connected ? "reuse_existing" : "open_if_missing",
+    };
   }
 
   showTask(taskId: string): void {
@@ -76,6 +90,7 @@ export class TaskViewer {
     this.server.closeAllConnections();
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
     this.origin = "";
+    this.lastClientSeen = null;
   }
 
   private json(res: ServerResponse, status: number, data: unknown): void {
@@ -136,6 +151,11 @@ export class TaskViewer {
       return;
     }
     if (url.pathname === "/api/tasks") {
+      // Only authenticated viewer polling counts; API callers and static asset
+      // requests must not make the bridge claim that a browser is connected.
+      if (url.searchParams.get("viewer") === "1") {
+        this.lastClientSeen = this.options.now?.() ?? Date.now();
+      }
       const tasks = await this.options.service.list({ limit: 100 });
       this.json(res, 200, { focused_task_id: this.focusedTask, tasks: tasks.map((task) => ({ ...taskPayload(task, "summary"), created_at: task.created_at })) });
       return;

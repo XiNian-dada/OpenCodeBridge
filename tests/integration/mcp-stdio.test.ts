@@ -123,7 +123,7 @@ describe("MCP stdio server with mock adapter", () => {
       const capabilities = await callTool(mcp.client, "agent_capabilities", {});
       expect(capabilities.isError).toBe(false);
       expect(capabilities.json.capabilities).toMatchObject({ adapter: "mock", simulated: true });
-      expect((await callTool(mcp.client, "agent_viewer", {})).json.viewer).toEqual({ url: null, auto_open: false });
+      expect((await callTool(mcp.client, "agent_viewer", {})).json.viewer).toMatchObject({ url: null, auto_open: false, presentation: "disabled" });
 
       const preflight = await callTool(mcp.client, "agent_preflight", {
         repo_root: harness.repoRoot,

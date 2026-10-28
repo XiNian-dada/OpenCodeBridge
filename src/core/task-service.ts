@@ -73,13 +73,19 @@ export class LocalTaskService implements TaskService {
   }
 
   async viewer(): Promise<TaskViewerInfo> {
-    return this.taskViewer?.info() ?? { url: null, auto_open: false };
+    return this.taskViewer?.info() ?? {
+      url: null, auto_open: false, connected: false, last_seen_at: null, presentation: "disabled",
+    };
   }
 
   private show(result: SpawnResult): SpawnResult {
     this.taskViewer?.showTask(result.task.task_id);
-    const url = this.taskViewer?.info().url;
-    return url ? { ...result, viewer_url: url } : result;
+    const viewer = this.taskViewer?.info();
+    return viewer?.url ? {
+      ...result,
+      viewer_url: viewer.url,
+      viewer_action: viewer.presentation === "reuse_existing" ? "reuse_existing" : "open_if_missing",
+    } : result;
   }
 
   async capabilities(): Promise<BridgeCapabilities> {

@@ -220,11 +220,15 @@ export interface SpawnResult {
   task: TaskView;
   deduplicated: boolean;
   viewer_url?: string;
+  viewer_action?: "reuse_existing" | "open_if_missing";
 }
 
 export interface TaskViewerInfo {
   url: string | null;
   auto_open: boolean;
+  connected: boolean;
+  last_seen_at: string | null;
+  presentation: "reuse_existing" | "open_if_missing" | "disabled";
 }
 
 export interface WaitTasksInput {

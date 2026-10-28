@@ -43,7 +43,7 @@ describe("daemon IPC", () => {
       expect((await stat(socketPath)).mode & 0o777).toBe(0o600);
 
       client = await IpcTaskClient.connect(socketPath);
-      expect(await client.viewer()).toEqual({ url: null, auto_open: false });
+      expect(await client.viewer()).toMatchObject({ url: null, auto_open: false, presentation: "disabled" });
       expect((await client.capabilities()).models.default).toBe("mock/echo");
       const spawned = await client.spawn({
         ...spawnInput(harness.repoRoot),

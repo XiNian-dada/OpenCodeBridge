@@ -80,7 +80,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
     "agent_viewer",
     {
       title: "Get the live conversation viewer",
-      description: "Return the private local URL of the automatically updating task, prompt, reply and tool-call viewer. Use open_in_codex with this URL to show or reuse it in the Codex in-app browser. The daemon never launches the system browser. No model call or export is needed.",
+      description: "Return the private live viewer URL and connection hint. presentation=reuse_existing means a viewer is polling: do not open another tab. Otherwise inspect current in-app browser tabs and open only if missing; after a URL change navigate the existing Bridge tab. The daemon never launches a browser. No model call or export is needed.",
       inputSchema: AgentViewerInput,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },
@@ -223,6 +223,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           task: taskPayload(result.task),
           deduplicated: result.deduplicated,
           ...(result.viewer_url === undefined ? {} : { viewer_url: result.viewer_url }),
+          ...(result.viewer_action === undefined ? {} : { viewer_action: result.viewer_action }),
         });
       } catch (error) {
         return failure(error);
@@ -456,6 +457,7 @@ export function registerAgentTools(server: McpServer, services: ToolServices): v
           parent_task_id: result.task.parent_task_id,
           session_id: result.task.session_id,
           ...(result.viewer_url === undefined ? {} : { viewer_url: result.viewer_url }),
+          ...(result.viewer_action === undefined ? {} : { viewer_action: result.viewer_action }),
         });
       } catch (error) {
         return failure(error);

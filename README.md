@@ -300,9 +300,14 @@ codex mcp list
 
 ### Live conversation viewer / `agent_viewer`
 
-After each spawn or follow-up, Codex uses the returned `viewer_url` with
-`open_in_codex` to show or reuse the viewer in its in-app browser. The daemon
-never opens the system browser. The viewer follows new tasks and follow-up turns, shows the latest
+Keep one viewer in the Codex in-app browser. Spawn and follow-up results include
+`viewer_url` and `viewer_action`. `reuse_existing` means an authenticated viewer
+has polled recently: do not open another tab. `open_if_missing` means inspect
+existing tabs for the same URL first, and use `open_in_codex` only when none
+exists. A heartbeat expires after 90 seconds; a sleeping tab may still exist.
+After a daemon URL change, navigate the existing Bridge tab to the new URL.
+`agent_viewer` exposes the same hint as `presentation`, plus `connected` and
+`last_seen_at`. The daemon never opens a browser. The viewer follows new tasks and follow-up turns, shows the latest
 100 turns grouped into conversations by root task, and polls the existing audit
 records every second (every five seconds while its tab is in the background).
 Inactive conversations use gray text and completed dots; conversations with an
