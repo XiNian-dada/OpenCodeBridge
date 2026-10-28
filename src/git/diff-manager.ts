@@ -78,6 +78,7 @@ export class DiffManager {
     const patchResult = await git(options.worktreePath, [
       "diff",
       "--no-ext-diff",
+      "--binary",
       options.baseCommit,
       "--",
       ...(file === undefined ? [] : [file]),
@@ -149,7 +150,7 @@ export class DiffManager {
     for (const path of allUntracked.slice(0, fullUntrackedLimit)) {
       const result = await git(
         options.worktreePath,
-        ["diff", "--no-index", "--no-ext-diff", "--", "/dev/null", path],
+        ["diff", "--no-index", "--no-ext-diff", "--binary", "--", "/dev/null", path],
         true,
       );
       if (result.stdout !== "") untrackedPatchByPath.set(path, result.stdout);
@@ -261,7 +262,7 @@ async function countLines(path: string): Promise<number> {
 function git(
   cwd: string,
   args: string[],
-  allowFailure = false,
+  allowDiffExit = false,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -269,9 +270,12 @@ function git(
       ["-C", cwd, ...args],
       { timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
       (error, stdout, stderr) => {
-        if (error !== null && !allowFailure) {
+        // `git diff --no-index` uses exit 1 for a valid patch. Timeouts,
+        // buffer overflow and other Git failures must never yield a full hash
+        // over incomplete stdout.
+        if (error !== null && !(allowDiffExit && error.code === 1 && !error.killed && !error.signal)) {
           reject(
-            new BridgeError("WORKTREE_CREATE_FAILED", `Git command failed: git ${args.join(" ")}`, {
+            new BridgeError("DIFF_READ_FAILED", `Git command failed: git ${args.join(" ")}`, {
               cause: error,
               details: { cwd, args, stderr },
             }),

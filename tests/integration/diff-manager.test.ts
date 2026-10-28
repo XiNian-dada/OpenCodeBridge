@@ -180,4 +180,18 @@ describe("DiffManager", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("retains binary patch payloads and reports diff errors without a creation error", async () => {
+    const dir = await realpath(await makeTempDir());
+    try {
+      const repo = await makeGitRepo(dir);
+      const base = (await execFileAsync("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
+      await writeFile(join(repo, "binary.bin"), Buffer.from([0, 1, 2, 3]));
+      const result = await new DiffManager().getDiff({ worktreePath: repo, baseCommit: base, includeFullPatch: true });
+      expect(result.patch).toContain("GIT binary patch");
+      expect(result.full_patch_complete).toBe(true);
+      expect(result.files.find((file) => file.path === "binary.bin")?.additions).toBe(0);
+      await expect(new DiffManager().getDiff({ worktreePath: repo, baseCommit: "missing-base-commit" })).rejects.toMatchObject({ code: "DIFF_READ_FAILED" });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
 });
