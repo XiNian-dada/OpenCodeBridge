@@ -1024,7 +1024,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       });
     }
 
-    // The live 2.1 API lists newest messages first; mocks/older APIs may not.
+    // The live 2.x API lists newest messages first; mocks/older APIs may not.
     // Only this turn's messages are emitted; replaying previous turns makes a
     // follow-up look completed before it produced an answer.
     const allMessages = [...messages].sort(

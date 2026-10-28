@@ -308,7 +308,7 @@ export function loadConfig(options: LoadConfigOptions = {}): BridgeConfig {
     opencode: {
       binary: raw.opencode?.binary ?? "opencode",
       ...(raw.opencode?.go_api_key ? { go_api_key: raw.opencode.go_api_key } : {}),
-      compatibility: raw.opencode?.compatibility ?? "2.1.x",
+      compatibility: raw.opencode?.compatibility ?? "2.2.x",
       startup_timeout_ms: raw.opencode?.startup_timeout_ms ?? 15_000,
     },
     history: {

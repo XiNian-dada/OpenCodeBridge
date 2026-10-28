@@ -306,6 +306,21 @@ Status: accepted for Phase 1
   revision; `task.created`/`task.resumed` record a policy snapshot for historical
   explanation.
 
+## OpenCode 2.2 compatibility (2026-10-28)
+
+- The installed OpenCode is now v2.2.0. The bridge default compatibility gate is
+  `2.2.x`; existing deployments pinned to `2.1.x` can keep that override.
+- The live no-model smoke suite was updated to assert 2.2.0 and passed all three
+  checks: private read-only sandbox startup, model discovery, session creation,
+  no-reply prompt admission, SSE `server.connected`, and the gateway-backed
+  session with isolated config and localhost-only networking.
+- No `/api` request/response shape changes required adapter changes. Event names
+  remain in the `session.tool.*`, `session.step.*`, `session.text.*`,
+  `session.usage.updated`, and `session.execution.*` families already handled by
+  the 2.1 adapter path.
+- Historical references to 2.1.x elsewhere in this document describe the
+  environment at the time of those phases; they are not the current default.
+
 ## Automatic local conversation display
 
 - The daemon now serves a read-only local viewer. Successful task creation and

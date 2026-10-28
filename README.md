@@ -44,9 +44,9 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - Model allowlist and expensive-model authorization gate
 - Fail-closed repository root policy
 - Mock adapter for tests and protocol validation
-- Real OpenCode 2.1 adapter:
+- Real OpenCode 2.2 adapter:
   - private `opencode serve` process per task
-  - version gate (`2.1.x` by default)
+  - version gate (`2.2.x` by default; `2.1.x` remains configurable)
   - random Basic-auth password per server
   - isolated `OPENCODE_DB`
   - fail-closed permission config
@@ -85,7 +85,7 @@ keeping task state, prompts, events, and cancellation under bridge control.
 - pnpm 10+
 - Git
 - Codex CLI with MCP support (0.152.0 tested)
-- OpenCode **2.1.x** for the real adapter (v2.1.2 tested)
+- OpenCode **2.2.x** for the real adapter (v2.2.0 tested)
 - macOS for writable OpenCode tasks (`sandbox-exec`) and read-only OS read
   isolation; Linux read-only tasks fall back to OpenCode permissions unless an
   OS sandbox is added
@@ -205,7 +205,7 @@ rejects missing models with `MODEL_UNAVAILABLE`.
   },
   "opencode": {
     "binary": "/opt/homebrew/bin/opencode",
-    "compatibility": "2.1.x",
+    "compatibility": "2.2.x",
     "startup_timeout_ms": 15000
   }
 }
@@ -814,9 +814,9 @@ prompt with `resume: false`):
 OPENCODE_LIVE=1 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test
 ```
 
-It starts a real private OpenCode 2.1 server under the Seatbelt sandbox, checks
+It starts a real private OpenCode 2.2 server under the Seatbelt sandbox, checks
 the version and models, creates a session, admits a no-reply prompt, and observes
-`server.connected`. The live test passed against OpenCode 2.1.2 on this machine.
+`server.connected`. The live test passed against OpenCode 2.2.0 on this machine.
 
 Run the full acceptance suite (typecheck, tests, build, MCP + daemon mock
 lifecycle):

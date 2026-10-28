@@ -32,7 +32,7 @@ const stepEvents = new Set([
   "session.inbox.delivered",
 ]);
 
-// OpenCode 2.1.2 emits session.tool/step/text.*; retain older session.next.* support.
+// OpenCode 2.1/2.2 emits session.tool/step/text.*; retain older session.next.* support.
 function canonicalType(type: string): string {
   return type.replace(/^session\.next\./, "session.");
 }

@@ -10,7 +10,7 @@ import { makeTempDir } from "../helpers/fixtures.js";
 
 const live = process.env.OPENCODE_LIVE === "1";
 
-describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
+describe.skipIf(!live)("live OpenCode 2.2 API smoke", () => {
   it("starts a read-only private server under the read-isolation sandbox", async () => {
     const dir = await realpath(await makeTempDir());
     let managed;
@@ -21,13 +21,13 @@ describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
         dataDir: join(dir, "data"),
         taskId: "task_live_read_smoke",
         configContent: { permissions: [...READ_ONLY_PERMISSIONS], snapshots: false },
-        compatibility: "2.1.x",
+        compatibility: "2.2.x",
         startupTimeoutMs: 15000,
         logger: createLogger("silent"),
         sandbox: { mode: "read", worktreePath: dir },
       });
 
-      expect(managed.info.version).toMatch(/^2\.1\./);
+      expect(managed.info.version).toMatch(/^2\.2\./);
       expect(managed.sandboxed).toBe(true);
       const models = await managed.client.models();
       expect(models.length).toBeGreaterThan(0);
@@ -90,7 +90,7 @@ describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
             },
           },
         },
-        compatibility: "2.1.x",
+        compatibility: "2.2.x",
         startupTimeoutMs: 15000,
         logger: createLogger("silent"),
         homeDir: join(dir, "data", "tasks", "task_live_gateway", "home"),
@@ -141,13 +141,13 @@ describe.skipIf(!live)("live OpenCode 2.1 API smoke", () => {
         dataDir: join(dir, "data"),
         taskId: "task_live_smoke",
         configContent: { permissions: [...READ_ONLY_PERMISSIONS], snapshots: false },
-        compatibility: "2.1.x",
+        compatibility: "2.2.x",
         startupTimeoutMs: 15000,
         logger: createLogger("silent"),
         sandbox: { worktreePath: dir },
       });
 
-      expect(managed.info.version).toMatch(/^2\.1\./);
+      expect(managed.info.version).toMatch(/^2\.2\./);
       expect(managed.sandboxed).toBe(true);
       const models = await managed.client.models();
       const free = models.find(

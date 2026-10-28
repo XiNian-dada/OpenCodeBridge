@@ -130,6 +130,29 @@ describe("managed OpenCode process", () => {
     }
   });
 
+  it("accepts OpenCode 2.2.0 with the 2.2.x compatibility gate", async () => {
+    const { dir, binary } = await makeFakeBinary();
+    let managed;
+    try {
+      managed = await startManagedOpenCodeServer({
+        binary,
+        cwd: dir,
+        dataDir: join(dir, "data"),
+        taskId: "task_process_2_2",
+        configContent: {},
+        compatibility: "2.2.x",
+        startupTimeoutMs: 5000,
+        logger: createLogger("silent"),
+        extraEnv: { FAKE_VERSION: "2.2.0" },
+      });
+      expect(managed.info.version).toBe("2.2.0");
+      expect((await managed.client.info()).version).toBe("2.2.0");
+    } finally {
+      if (managed !== undefined) await managed.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an incompatible OpenCode version and cleans up", async () => {
     const { dir, binary } = await makeFakeBinary();
     try {

@@ -15,6 +15,7 @@ it("defaults OpenCode to Go, disables legacy system-browser auto opening, and le
     expect(config.viewer).toEqual({ enabled: true, auto_open: false });
     expect(config.scheduler.default_timeout_seconds).toBe(0);
     expect(config.scheduler.max_timeout_seconds).toBe(604_800);
+    expect(config.opencode.compatibility).toBe("2.2.x");
     writeFileSync(path, JSON.stringify({ adapter: "opencode", models: { allow: ["other/model"], default: "other/model" } }));
     expect(loadConfig({ path, env: {} }).models.allow).toEqual(["other/model"]);
     writeFileSync(path, JSON.stringify({

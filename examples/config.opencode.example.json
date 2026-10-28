@@ -29,7 +29,7 @@
   },
   "opencode": {
     "binary": "/opt/homebrew/bin/opencode",
-    "compatibility": "2.1.x",
+    "compatibility": "2.2.x",
     "startup_timeout_ms": 15000
   },
   "history": {
